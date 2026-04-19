@@ -16,21 +16,30 @@ FORMAT_TO_TEAM_SIZE = {
 
 DRAW_MODES = {"RANDOM", "AVOID_DUPLICATES", "SWISS_BY_WINS"}
 
+
 @dataclass(frozen=True)
 class RoundConfig:
-    format: str                 # SINGLE|DOUBLETTE|TRIPLETTE
-    draw_mode: str              # RANDOM|AVOID_DUPLICATES|SWISS_BY_WINS
-    exempt_mode: str = "win_fixed_score"   # none|win_fixed_score
+    format: str  # SINGLE|DOUBLETTE|TRIPLETTE
+    draw_mode: str  # RANDOM|AVOID_DUPLICATES|SWISS_BY_WINS
+    exempt_mode: str = "win_fixed_score"  # none|win_fixed_score
     exempt_score_for: int = 13
     exempt_score_against: int = 7
+
 
 def _pair_key(a: int, b: int) -> tuple[int, int]:
     return (a, b) if a < b else (b, a)
 
-def _team_strength(team_players: list[int], wins_by_player: dict[int, int], plus_by_player: dict[int, int]) -> int:
+
+def _team_strength(
+    team_players: list[int],
+    wins_by_player: dict[int, int],
+    plus_by_player: dict[int, int],
+) -> int:
+    # Swiss score: wins first, tie-break by points-for ("plus")
     wins = sum(wins_by_player.get(pid, 0) for pid in team_players)
     plus = sum(plus_by_player.get(pid, 0) for pid in team_players)
     return wins * 1000 + plus
+
 
 def draw_round(
     conn: sqlite3.Connection,
@@ -57,7 +66,7 @@ def draw_round(
         exempt_score_against=cfg.exempt_score_against,
     )
 
-    # --- ranking -> wins map for swiss ---
+    # --- ranking -> swiss maps (validated matches only) ---
     ranking = compute_player_ranking(conn)
     wins_by_player = {s.player_id: s.wins for s in ranking}
     plus_by_player = {s.player_id: s.plus for s in ranking}
@@ -84,42 +93,64 @@ def draw_round(
 
     # --- build teams ---
     pool = player_ids[:]
-    random.shuffle(pool)
+    if cfg.draw_mode == "SWISS_BY_WINS":
+        # Swiss: group players by level (wins first, then points-for)
+        pool.sort(
+            key=lambda pid: (wins_by_player.get(pid, 0), plus_by_player.get(pid, 0)),
+            reverse=True,
+        )
+    else:
+        random.shuffle(pool)
 
     teams: list[list[int]] = []
-    while len(pool) >= team_size:
-        teams.append([pool.pop() for _ in range(team_size)])
+    if cfg.draw_mode == "SWISS_BY_WINS":
+        # IMPORTANT: take players from the START of the sorted pool (do not pop from end)
+        i = 0
+        while i + team_size <= len(pool):
+            teams.append(pool[i : i + team_size])
+            i += team_size
+        pool = pool[i:]  # leftovers
+    else:
+        while len(pool) >= team_size:
+            teams.append([pool.pop() for _ in range(team_size)])
 
     # leftovers -> exempt "team" (if any)
     exempt_team: Optional[list[int]] = pool[:] if pool else None
 
-    # Improve: avoid repeating teammates (simple greedy improvement)
-    # (v1 heuristic: do a few random shuffles and keep best)
-    def score_team_set(ts: list[list[int]]) -> int:
-        return sum(teammate_penalty(t) for t in ts)
+    # Improve: avoid repeating teammates
+    # IMPORTANT: in Swiss mode, do NOT globally reshuffle players (it breaks the Swiss grouping).
+    if cfg.draw_mode != "SWISS_BY_WINS":
 
-    best = teams
-    best_score = score_team_set(best)
-    for _ in range(200):  # small search
-        cand = [t[:] for t in teams]
-        flat = [pid for t in cand for pid in t]
-        random.shuffle(flat)
-        rebuilt = []
-        i = 0
-        while i + team_size <= len(flat):
-            rebuilt.append(flat[i:i+team_size])
-            i += team_size
-        s = score_team_set(rebuilt)
-        if s < best_score:
-            best = rebuilt
-            best_score = s
-            if best_score == 0:
-                break
-    teams = best
+        def score_team_set(ts: list[list[int]]) -> int:
+            return sum(teammate_penalty(t) for t in ts)
+
+        best = teams
+        best_score = score_team_set(best)
+
+        for _ in range(200):  # small search
+            cand = [t[:] for t in teams]
+            flat = [pid for t in cand for pid in t]
+            random.shuffle(flat)
+
+            rebuilt: list[list[int]] = []
+            j = 0
+            while j + team_size <= len(flat):
+                rebuilt.append(flat[j : j + team_size])
+                j += team_size
+
+            s = score_team_set(rebuilt)
+            if s < best_score:
+                best = rebuilt
+                best_score = s
+                if best_score == 0:
+                    break
+
+        teams = best
 
     # --- persist teams with team_index 1..N ---
     team_ids: list[int] = []
     team_players_by_id: dict[int, list[int]] = {}
+
     for idx, t in enumerate(teams, start=1):
         tid = rr.create_round_team(round_id, idx, t)
         team_ids.append(tid)
@@ -148,34 +179,41 @@ def draw_round(
     def build_pairing_greedy(ids: list[int]) -> list[tuple[int, Optional[int]]]:
         remaining = ids[:]
         pairs: list[tuple[int, Optional[int]]] = []
+
         while len(remaining) >= 2:
             a = remaining.pop(0)
-            best_j = None
-            best_cost = None
+
+            best_j: Optional[int] = None
+            best_cost: Optional[int] = None
+
             for j, b in enumerate(remaining):
                 cost = opponent_penalty(team_players_by_id[a], team_players_by_id[b])
+
                 # if swiss: add small cost if strength gap large (soft constraint)
                 if cfg.draw_mode == "SWISS_BY_WINS":
                     sa = _team_strength(team_players_by_id[a], wins_by_player, plus_by_player)
                     sb = _team_strength(team_players_by_id[b], wins_by_player, plus_by_player)
                     cost += abs(sa - sb)
+
                 if best_cost is None or cost < best_cost:
                     best_cost = cost
                     best_j = j
                     if best_cost == 0:
                         break
+
             b = remaining.pop(best_j)  # type: ignore[arg-type]
             pairs.append((a, b))
+
         if remaining:
             pairs.append((remaining[0], None))
+
         return pairs
 
     pairs = build_pairing_greedy(team_ids)
 
     # If we have an explicit exempt team (leftovers), we don't want it paired.
-    # So: drop any implicit exempt from pairing; add explicit exempt as match with NULL
+    # So: drop any implicit bye from pairing; add explicit exempt as match with NULL
     if exempt_team_id is not None:
-        # remove implicit bye if created by odd number of teams
         pairs = [(a, b) for (a, b) in pairs if b is not None]
         pairs.append((exempt_team_id, None))
 
@@ -183,7 +221,9 @@ def draw_round(
     for (t1, t2) in pairs:
         if t2 is None and cfg.exempt_mode == "win_fixed_score":
             rr.create_match(
-                round_id, t1, None,
+                round_id,
+                t1,
+                None,
                 score1=cfg.exempt_score_for,
                 score2=cfg.exempt_score_against,
             )
