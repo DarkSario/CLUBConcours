@@ -96,10 +96,17 @@ class RoundRepo:
             )
         return team_id
 
-    def create_match(self, round_id: int, team1_id: int, team2_id: Optional[int]) -> int:
+    def create_match(
+        self,
+        round_id: int,
+        team1_id: int,
+        team2_id: Optional[int],
+        score1: int | None = None,
+        score2: int | None = None,
+    ) -> int:
         cur = self.conn.execute(
             "INSERT INTO matches(round_id, team1_id, team2_id, score1, score2, validated) VALUES(?,?,?,?,?,0)",
-            (round_id, team1_id, team2_id, None, None),
+            (round_id, team1_id, team2_id, score1, score2),
         )
         return int(cur.lastrowid)
 

@@ -181,7 +181,14 @@ def draw_round(
 
     # --- persist matches ---
     for (t1, t2) in pairs:
-        rr.create_match(round_id, t1, t2)
+        if t2 is None and cfg.exempt_mode == "win_fixed_score":
+            rr.create_match(
+                round_id, t1, None,
+                score1=cfg.exempt_score_for,
+                score2=cfg.exempt_score_against,
+            )
+        else:
+            rr.create_match(round_id, t1, t2)
 
     rr.mark_round_drawn(round_id)
     rr.commit()
