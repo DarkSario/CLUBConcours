@@ -118,23 +118,24 @@ class RoundRepo:
         self.conn.commit()
 
     def validate_round(self, round_id: int) -> None:
-    # Require all scores for non-exempt matches before validation
-    missing = self.conn.execute(
-        """
-        SELECT COUNT(*) AS c
-        FROM matches
-        WHERE round_id = ?
-          AND team2_id IS NOT NULL
-          AND (score1 IS NULL OR score2 IS NULL)
-        """,
-        (round_id,),
-    ).fetchone()
-    if missing and int(missing["c"]) > 0:
-        raise ValueError("Impossible de valider : tous les scores ne sont pas saisis (hors exempt).")
+        # Require all scores for non-exempt matches before validation
+        missing = self.conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM matches
+            WHERE round_id = ?
+            AND team2_id IS NOT NULL
+            AND (score1 IS NULL OR score2 IS NULL)
+            """,
+            (round_id,),
+        ).fetchone()
+        if missing and int(missing["c"]) > 0:
+            raise ValueError("Impossible de valider : tous les scores ne sont pas saisis (hors exempt).")
 
-    self.conn.execute("UPDATE rounds SET validated=1 WHERE id=?", (round_id,))
-    self.conn.execute("UPDATE matches SET validated=1 WHERE round_id=?", (round_id,))
-    self.conn.commit()
+        # Validation implies locking scores
+        self.conn.execute("UPDATE rounds SET scores_locked=1, validated=1 WHERE id=?", (round_id,))
+        self.conn.execute("UPDATE matches SET validated=1 WHERE round_id=?", (round_id,))
+        self.conn.commit()
      
 
 # ---------- History / constraints helpers ----------
