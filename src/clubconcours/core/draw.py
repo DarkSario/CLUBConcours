@@ -27,8 +27,10 @@ class RoundConfig:
 def _pair_key(a: int, b: int) -> tuple[int, int]:
     return (a, b) if a < b else (b, a)
 
-def _team_strength(team_players: list[int], wins_by_player: dict[int, int]) -> int:
-    return sum(wins_by_player.get(pid, 0) for pid in team_players)
+def _team_strength(team_players: list[int], wins_by_player: dict[int, int], plus_by_player: dict[int, int]) -> int:
+    wins = sum(wins_by_player.get(pid, 0) for pid in team_players)
+    plus = sum(plus_by_player.get(pid, 0) for pid in team_players)
+    return wins * 1000 + plus
 
 def draw_round(
     conn: sqlite3.Connection,
@@ -58,6 +60,7 @@ def draw_round(
     # --- ranking -> wins map for swiss ---
     ranking = compute_player_ranking(conn)
     wins_by_player = {s.player_id: s.wins for s in ranking}
+    plus_by_player = {s.player_id: s.plus for s in ranking}
 
     # --- history penalties (priority=3: teammates + opponents) ---
     teammate_counts = hr.teammate_count()
@@ -133,7 +136,7 @@ def draw_round(
         # sort teams by strength desc; tie-break: lower teammate penalty
         team_ids.sort(
             key=lambda tid: (
-                -_team_strength(team_players_by_id[tid], wins_by_player),
+                -_team_strength(team_players_by_id[tid], wins_by_player, plus_by_player),
                 teammate_penalty(team_players_by_id[tid]),
                 tid,
             )
@@ -153,8 +156,8 @@ def draw_round(
                 cost = opponent_penalty(team_players_by_id[a], team_players_by_id[b])
                 # if swiss: add small cost if strength gap large (soft constraint)
                 if cfg.draw_mode == "SWISS_BY_WINS":
-                    sa = _team_strength(team_players_by_id[a], wins_by_player)
-                    sb = _team_strength(team_players_by_id[b], wins_by_player)
+                    sa = _team_strength(team_players_by_id[a], wins_by_player, plus_by_player)
+                    sb = _team_strength(team_players_by_id[b], wins_by_player, plus_by_player)
                     cost += abs(sa - sb)
                 if best_cost is None or cost < best_cost:
                     best_cost = cost
