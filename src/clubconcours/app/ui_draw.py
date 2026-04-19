@@ -20,6 +20,7 @@ from clubconcours.storage.repositories import PlayerRepo
 
 class DrawTab(QWidget):
     data_changed = Signal()
+    round_created = Signal(int)  # round_id
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         super().__init__()
@@ -82,6 +83,7 @@ class DrawTab(QWidget):
 
         self.output.setPlainText(self._format_round(round_id))
         self.data_changed.emit()
+        self.round_created.emit(round_id)
 
     def _format_round(self, round_id: int) -> str:
         r = self.conn.execute("SELECT * FROM rounds WHERE id=?", (round_id,)).fetchone()
