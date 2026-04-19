@@ -1,6 +1,5 @@
 ﻿from __future__ import annotations
 
-import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +19,5 @@ def connect(db_path: str) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
     conn.executescript(schema)
-    # meta defaults
     conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '1');")
     conn.commit()

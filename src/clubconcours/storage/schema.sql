@@ -15,8 +15,8 @@ CREATE TABLE IF NOT EXISTS rounds (
   number INTEGER NOT NULL,
   format TEXT NOT NULL,          -- SINGLE | DOUBLETTE | TRIPLETTE
   exempt_mode TEXT NOT NULL,     -- none | win_fixed_score
-  exempt_score_for INTEGER,      -- ex: 13
-  exempt_score_against INTEGER,  -- ex: 7
+  exempt_score_for INTEGER,      -- default 13
+  exempt_score_against INTEGER,  -- default 7
   created_at TEXT NOT NULL,
   drawn INTEGER NOT NULL DEFAULT 0,
   scores_locked INTEGER NOT NULL DEFAULT 0,
