@@ -105,6 +105,16 @@ class RoundRepo:
 
     def commit(self) -> None:
         self.conn.commit()
+        
+    def lock_scores(self, round_id: int) -> None:
+        self.conn.execute("UPDATE rounds SET scores_locked=1 WHERE id=?", (round_id,))
+        self.conn.commit()
+
+    def validate_round(self, round_id: int) -> None:
+        # Validate round + all matches (this makes them count in ranking)
+        self.conn.execute("UPDATE rounds SET validated=1 WHERE id=?", (round_id,))
+        self.conn.execute("UPDATE matches SET validated=1 WHERE round_id=?", (round_id,))
+        self.conn.commit()       
 
 # ---------- History / constraints helpers ----------
 
