@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS rounds (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   number INTEGER NOT NULL,
   format TEXT NOT NULL,          -- SINGLE | DOUBLETTE | TRIPLETTE
+  draw_mode TEXT NOT NULL,       -- RANDOM | AVOID_DUPLICATES | SWISS_BY_WINS
   exempt_mode TEXT NOT NULL,     -- none | win_fixed_score
   exempt_score_for INTEGER,      -- default 13
   exempt_score_against INTEGER,  -- default 7
