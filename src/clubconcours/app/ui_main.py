@@ -38,7 +38,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.players_tab, "Joueurs")
         self.tabs.addTab(self.draw_tab, "Tirage")
 
-        # Map round_id -> tab
         self.round_tabs: dict[int, RoundTab] = {}
 
         # Wiring

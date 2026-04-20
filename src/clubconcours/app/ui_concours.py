@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -33,7 +33,6 @@ class ConcoursTab(QWidget):
 
         layout = QVBoxLayout(self)
 
-        # --- Top settings row ---
         top = QHBoxLayout()
 
         top.addWidget(QLabel("Nombre de terrains:"))
@@ -62,15 +61,12 @@ class ConcoursTab(QWidget):
 
         layout.addLayout(top)
 
-        # --- Plan table ---
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Partie", "Format", "Mode tirage"])
         self.table.setAlternatingRowColors(True)
         layout.addWidget(self.table)
 
         self.refresh()
-
-    # ---- meta helpers ----
 
     def _meta_get(self, key: str) -> str | None:
         row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -83,13 +79,9 @@ class ConcoursTab(QWidget):
             (key, value),
         )
 
-    # ---- UI ----
-
     def refresh(self) -> None:
-        # num courts
         self.spin_courts.setValue(self.rr.get_num_courts())
 
-        # planned rounds
         planned = self._meta_get("num_rounds_planned")
         if planned is not None:
             try:
@@ -97,7 +89,6 @@ class ConcoursTab(QWidget):
             except Exception:
                 pass
 
-        # plan
         plan_json = self._meta_get("round_plan_json")
         plan: list[dict] = []
         if plan_json:
@@ -106,12 +97,9 @@ class ConcoursTab(QWidget):
             except Exception:
                 plan = []
 
-        # ensure table has correct number of rows
         self._resize_plan_table()
 
-        # fill from plan
         for i in range(self.table.rowCount()):
-            # defaults
             fmt = "DOUBLETTE"
             mode = "AVOID_DUPLICATES"
             if i < len(plan):
@@ -127,19 +115,15 @@ class ConcoursTab(QWidget):
         self.table.setRowCount(n)
 
         for i in range(n):
-            # Partie #
             it_num = QTableWidgetItem(str(i + 1))
-            it_num.setFlags(it_num.flags() & ~it_num.flags().__class__(0x2))  # remove editable (Qt.ItemIsEditable)
-            # safer explicit:
-            it_num.setFlags(it_num.flags() & ~it_num.flags().ItemIsEditable)  # type: ignore[attr-defined]
+            it_num.setFlags(it_num.flags() & ~Qt.ItemIsEditable)
+            it_num.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(i, 0, it_num)
 
-            # Format combo
             cb_fmt = QComboBox()
             cb_fmt.addItems(FORMATS)
             self.table.setCellWidget(i, 1, cb_fmt)
 
-            # Mode combo
             cb_mode = QComboBox()
             cb_mode.addItems(MODES)
             self.table.setCellWidget(i, 2, cb_mode)
@@ -147,9 +131,9 @@ class ConcoursTab(QWidget):
         self.table.resizeColumnsToContents()
 
     def _set_row(self, row: int, num: int, fmt: str, mode: str) -> None:
-        # Partie #
         it_num = QTableWidgetItem(str(num))
-        it_num.setFlags(it_num.flags() & ~it_num.flags().ItemIsEditable)  # type: ignore[attr-defined]
+        it_num.setFlags(it_num.flags() & ~Qt.ItemIsEditable)
+        it_num.setTextAlignment(Qt.AlignCenter)
         self.table.setItem(row, 0, it_num)
 
         cb_fmt = self.table.cellWidget(row, 1)
@@ -161,14 +145,12 @@ class ConcoursTab(QWidget):
             cb_mode.setCurrentText(mode if mode in MODES else "AVOID_DUPLICATES")
 
     def _save(self) -> None:
-        # Save num courts via RoundRepo helper
         try:
             self.rr.set_num_courts(int(self.spin_courts.value()))
         except Exception as e:
             QMessageBox.critical(self, "Concours", str(e))
             return
 
-        # Save planned rounds + plan json
         planned = int(self.spin_rounds.value())
         plan: list[dict] = []
         for i in range(self.table.rowCount()):

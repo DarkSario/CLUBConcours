@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from PySide6.QtCore import Signal
@@ -53,12 +54,36 @@ class DrawTab(QWidget):
         layout.addWidget(self.output)
 
     def refresh(self) -> None:
-        # Nothing dynamic yet (we just show results when draw is clicked)
         pass
 
     def _next_round_number(self) -> int:
         r = self.conn.execute("SELECT COALESCE(MAX(number), 0) AS m FROM rounds").fetchone()
         return int(r["m"]) + 1
+
+    def _meta_get(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return None if row is None else str(row["value"])
+
+    def _prefill_from_concours_plan(self, round_number: int) -> None:
+        plan_json = self._meta_get("round_plan_json")
+        if not plan_json:
+            return
+        try:
+            plan = json.loads(plan_json)
+        except Exception:
+            return
+
+        idx = round_number - 1
+        if idx < 0 or idx >= len(plan):
+            return
+
+        fmt = plan[idx].get("format")
+        mode = plan[idx].get("draw_mode")
+
+        if isinstance(fmt, str) and fmt:
+            self.format_combo.setCurrentText(fmt)
+        if isinstance(mode, str) and mode:
+            self.mode_combo.setCurrentText(mode)
 
     def _draw(self) -> None:
         players = self.player_repo.list_players()
@@ -67,6 +92,10 @@ class DrawTab(QWidget):
             return
 
         round_number = self._next_round_number()
+
+        # PREFILL from Concours plan
+        self._prefill_from_concours_plan(round_number)
+
         fmt = self.format_combo.currentText()
         mode = self.mode_combo.currentText()
 
