@@ -95,6 +95,15 @@ class DrawTab(QWidget):
     def _contest_initialized(self) -> bool:
         return self._meta_get("contest_initialized") == "1"
 
+    def _num_rounds_planned(self) -> int | None:
+        v = self._meta_get("num_rounds_planned")
+        if not v:
+            return None
+        try:
+            return int(v)
+        except Exception:
+            return None
+
     def _get_plan_entry(self, round_number: int) -> tuple[str | None, str | None]:
         plan_json = self._meta_get("round_plan_json")
         if not plan_json:
@@ -137,6 +146,15 @@ class DrawTab(QWidget):
             return
 
         round_number = self._next_round_number()
+
+        planned = self._num_rounds_planned()
+        if planned is not None and round_number > planned:
+            QMessageBox.information(
+                self,
+                "Tirage",
+                f"Le concours est prévu pour {planned} parties. Impossible de tirer la partie {round_number}.",
+            )
+            return
 
         # Apply plan at click-time unless user unlocked Modify
         if not self._edit_enabled:
