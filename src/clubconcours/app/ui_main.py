@@ -2,15 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtWidgets import (
-    QMainWindow,
-    QTabWidget,
-    QMessageBox,
-)
+from PySide6.QtWidgets import QMainWindow, QTabWidget, QMessageBox
 
 from clubconcours.storage import db
-from clubconcours.app.ui_concours import ConcoursTab
 from clubconcours.app.ui_players import PlayersTab
+from clubconcours.app.ui_concours import ConcoursTab
 from clubconcours.app.ui_draw import DrawTab
 from clubconcours.app.ui_round_tab import RoundTab
 
@@ -20,32 +16,55 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("CLUBConcours")
 
-        # DB
-        self.db_path = Path(db.default_db_filename("CLUBConcours"))
-        self.conn = db.connect(str(self.db_path))
-        db.init_db(self.conn)
-
         self.tabs = QTabWidget()
         self.tabs.setMovable(True)
         self.tabs.setTabsClosable(False)
         self.setCentralWidget(self.tabs)
 
-        self.concours_tab = ConcoursTab(self.conn)
-        self.players_tab = PlayersTab(self.conn)
-        self.draw_tab = DrawTab(self.conn)
-
-        self.tabs.addTab(self.concours_tab, "Concours")
-        self.tabs.addTab(self.players_tab, "Joueurs")
-        self.tabs.addTab(self.draw_tab, "Tirage")
+        # open default DB
+        self.db_path = Path(db.default_db_filename("CLUBConcours"))
+        self.conn = db.connect(str(self.db_path))
+        db.init_db(self.conn)
 
         self.round_tabs: dict[int, RoundTab] = {}
+        self._build_tabs()
+
+        self._refresh_all()
+
+    def _build_tabs(self) -> None:
+        self.tabs.clear()
+        self.round_tabs = {}
+
+        # Order requested: Inscription -> Concours -> Tirage -> Parties...
+        self.players_tab = PlayersTab(self.conn)
+        self.concours_tab = ConcoursTab(self.conn, on_db_switch=self.switch_db)
+        self.draw_tab = DrawTab(self.conn)
+
+        self.tabs.addTab(self.players_tab, "Inscription")
+        self.tabs.addTab(self.concours_tab, "Concours")
+        self.tabs.addTab(self.draw_tab, "Tirage")
 
         # Wiring
-        self.concours_tab.data_changed.connect(self._refresh_all)
         self.players_tab.data_changed.connect(self._refresh_all)
+        self.concours_tab.data_changed.connect(self._refresh_all)
         self.draw_tab.data_changed.connect(self._refresh_all)
         self.draw_tab.round_created.connect(self._open_round_tab)
 
+    def switch_db(self, new_db_path: Path) -> None:
+        """
+        Called by Concours tab after 'Initialiser' or 'Importer'.
+        Reopens DB connection and rebuilds UI.
+        """
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+
+        self.db_path = new_db_path
+        self.conn = db.connect(str(self.db_path))
+        db.init_db(self.conn)
+
+        self._build_tabs()
         self._refresh_all()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
@@ -56,15 +75,13 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def _refresh_all(self) -> None:
-        self.concours_tab.refresh()
         self.players_tab.refresh()
+        self.concours_tab.refresh()
         self.draw_tab.refresh()
         self._sync_round_tabs()
 
     def _sync_round_tabs(self) -> None:
-        rounds = self.conn.execute(
-            "SELECT id, number FROM rounds ORDER BY number"
-        ).fetchall()
+        rounds = self.conn.execute("SELECT id, number FROM rounds ORDER BY number").fetchall()
 
         for r in rounds:
             rid = int(r["id"])
@@ -83,7 +100,6 @@ class MainWindow(QMainWindow):
 
     def _open_round_tab(self, round_id: int) -> None:
         self._sync_round_tabs()
-
         tab = self.round_tabs.get(round_id)
         if tab is None:
             return

@@ -28,6 +28,8 @@ class DrawTab(QWidget):
         self.conn = conn
         self.player_repo = PlayerRepo(conn)
 
+        self._edit_enabled = False
+
         layout = QVBoxLayout(self)
 
         row = QHBoxLayout()
@@ -42,6 +44,10 @@ class DrawTab(QWidget):
         self.mode_combo.setCurrentText("AVOID_DUPLICATES")
         row.addWidget(self.mode_combo)
 
+        self.btn_modify = QPushButton("Modifier")
+        self.btn_modify.clicked.connect(self._toggle_modify)
+        row.addWidget(self.btn_modify)
+
         self.btn_draw = QPushButton("Tirer la partie")
         self.btn_draw.clicked.connect(self._draw)
         row.addWidget(self.btn_draw)
@@ -53,8 +59,20 @@ class DrawTab(QWidget):
         self.output.setReadOnly(True)
         layout.addWidget(self.output)
 
+        self._apply_edit_state()
+
     def refresh(self) -> None:
-        pass
+        # keep UI state
+        self._apply_edit_state()
+
+    def _apply_edit_state(self) -> None:
+        self.format_combo.setEnabled(self._edit_enabled)
+        self.mode_combo.setEnabled(self._edit_enabled)
+        self.btn_modify.setText("Verrouiller" if self._edit_enabled else "Modifier")
+
+    def _toggle_modify(self) -> None:
+        self._edit_enabled = not self._edit_enabled
+        self._apply_edit_state()
 
     def _next_round_number(self) -> int:
         r = self.conn.execute("SELECT COALESCE(MAX(number), 0) AS m FROM rounds").fetchone()
@@ -85,7 +103,15 @@ class DrawTab(QWidget):
         if isinstance(mode, str) and mode:
             self.mode_combo.setCurrentText(mode)
 
+    def _contest_initialized(self) -> bool:
+        v = self._meta_get("contest_initialized")
+        return v == "1"
+
     def _draw(self) -> None:
+        if not self._contest_initialized():
+            QMessageBox.warning(self, "Tirage", "Concours non initialisé. Va dans l'onglet Concours.")
+            return
+
         players = self.player_repo.list_players()
         if len(players) < 2:
             QMessageBox.warning(self, "Tirage", "Ajoute au moins 2 joueurs.")
@@ -93,8 +119,9 @@ class DrawTab(QWidget):
 
         round_number = self._next_round_number()
 
-        # PREFILL from Concours plan
-        self._prefill_from_concours_plan(round_number)
+        # PREFILL from Concours plan unless user explicitly unlocked "Modifier"
+        if not self._edit_enabled:
+            self._prefill_from_concours_plan(round_number)
 
         fmt = self.format_combo.currentText()
         mode = self.mode_combo.currentText()
@@ -109,6 +136,10 @@ class DrawTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Tirage", str(e))
             return
+
+        # after a draw, lock editing again (so next round uses plan by default)
+        self._edit_enabled = False
+        self._apply_edit_state()
 
         self.output.setPlainText(self._format_round(round_id))
         self.data_changed.emit()
