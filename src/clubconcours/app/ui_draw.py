@@ -55,15 +55,22 @@ class DrawTab(QWidget):
         row.addStretch(1)
         layout.addLayout(row)
 
+        # Info line: shows what plan is being applied for next round
+        self.plan_info = QLabel("")
+        layout.addWidget(self.plan_info)
+
         self.output = QPlainTextEdit()
         self.output.setReadOnly(True)
         layout.addWidget(self.output)
 
         self._apply_edit_state()
+        self.refresh()
 
     def refresh(self) -> None:
-        # keep UI state
+        # If user did not unlock "Modifier", keep UI in sync with concours plan
         self._apply_edit_state()
+        if not self._edit_enabled:
+            self._apply_plan_to_combos_for_next_round()
 
     def _apply_edit_state(self) -> None:
         self.format_combo.setEnabled(self._edit_enabled)
@@ -73,6 +80,9 @@ class DrawTab(QWidget):
     def _toggle_modify(self) -> None:
         self._edit_enabled = not self._edit_enabled
         self._apply_edit_state()
+        if not self._edit_enabled:
+            # When re-locking, snap back to plan for the next round
+            self._apply_plan_to_combos_for_next_round()
 
     def _next_round_number(self) -> int:
         r = self.conn.execute("SELECT COALESCE(MAX(number), 0) AS m FROM rounds").fetchone()
@@ -82,34 +92,43 @@ class DrawTab(QWidget):
         row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return None if row is None else str(row["value"])
 
-    def _prefill_from_concours_plan(self, round_number: int) -> None:
+    def _contest_initialized(self) -> bool:
+        return self._meta_get("contest_initialized") == "1"
+
+    def _get_plan_entry(self, round_number: int) -> tuple[str | None, str | None]:
         plan_json = self._meta_get("round_plan_json")
         if not plan_json:
-            return
+            return None, None
         try:
             plan = json.loads(plan_json)
         except Exception:
-            return
+            return None, None
 
         idx = round_number - 1
         if idx < 0 or idx >= len(plan):
-            return
+            return None, None
 
         fmt = plan[idx].get("format")
         mode = plan[idx].get("draw_mode")
+        return (fmt if isinstance(fmt, str) else None, mode if isinstance(mode, str) else None)
 
-        if isinstance(fmt, str) and fmt:
+    def _apply_plan_to_combos_for_next_round(self) -> None:
+        rn = self._next_round_number()
+        fmt, mode = self._get_plan_entry(rn)
+
+        if fmt:
             self.format_combo.setCurrentText(fmt)
-        if isinstance(mode, str) and mode:
+        if mode:
             self.mode_combo.setCurrentText(mode)
 
-    def _contest_initialized(self) -> bool:
-        v = self._meta_get("contest_initialized")
-        return v == "1"
+        if fmt or mode:
+            self.plan_info.setText(f"Plan concours: Partie {rn} → {fmt or '?'} / {mode or '?'}")
+        else:
+            self.plan_info.setText(f"Plan concours: Partie {rn} → (pas de plan enregistré)")
 
     def _draw(self) -> None:
         if not self._contest_initialized():
-            QMessageBox.warning(self, "Tirage", "Concours non initialisé. Va dans l'onglet Concours.")
+            QMessageBox.warning(self, "Tirage", "Concours non initialisé (au démarrage).")
             return
 
         players = self.player_repo.list_players()
@@ -119,9 +138,13 @@ class DrawTab(QWidget):
 
         round_number = self._next_round_number()
 
-        # PREFILL from Concours plan unless user explicitly unlocked "Modifier"
+        # Apply plan at click-time unless user unlocked Modify
         if not self._edit_enabled:
-            self._prefill_from_concours_plan(round_number)
+            fmt, mode = self._get_plan_entry(round_number)
+            if fmt:
+                self.format_combo.setCurrentText(fmt)
+            if mode:
+                self.mode_combo.setCurrentText(mode)
 
         fmt = self.format_combo.currentText()
         mode = self.mode_combo.currentText()
@@ -144,6 +167,9 @@ class DrawTab(QWidget):
         self.output.setPlainText(self._format_round(round_id))
         self.data_changed.emit()
         self.round_created.emit(round_id)
+
+        # update info for next round
+        self._apply_plan_to_combos_for_next_round()
 
     def _format_round(self, round_id: int) -> str:
         r = self.conn.execute("SELECT * FROM rounds WHERE id=?", (round_id,)).fetchone()
