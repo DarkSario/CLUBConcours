@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -86,14 +85,6 @@ class RankingTab(QWidget):
         tournament_name = self._meta_get("tournament_name") or "CLUBConcours"
         tournament_date = self._meta_get("tournament_date") or ""
         tournament_location = self._meta_get("tournament_location") or ""
-        num_courts = self._meta_get("num_courts") or ""
-        planned = self._meta_get("num_rounds_planned") or ""
-        plan_json = self._meta_get("round_plan_json") or ""
-
-        try:
-            plan = json.loads(plan_json) if plan_json else []
-        except Exception:
-            plan = []
 
         ranking = compute_player_ranking(self.conn)
 
@@ -117,9 +108,6 @@ class RankingTab(QWidget):
                 tournament_name=tournament_name,
                 tournament_date=tournament_date,
                 tournament_location=tournament_location,
-                num_courts=num_courts,
-                planned=planned,
-                plan=plan,
                 ranking=ranking,
             )
         except Exception as e:
@@ -134,9 +122,6 @@ class RankingTab(QWidget):
         tournament_name: str,
         tournament_date: str,
         tournament_location: str,
-        num_courts: str,
-        planned: str,
-        plan: list[dict],
         ranking,
     ) -> None:
         styles = getSampleStyleSheet()
@@ -156,47 +141,10 @@ class RankingTab(QWidget):
         subtitle_parts = [p for p in [tournament_date, tournament_location] if p]
         if subtitle_parts:
             story.append(Paragraph(" — ".join(subtitle_parts), styles["Heading3"]))
-        story.append(Spacer(1, 6 * mm))
-
-        params = []
-        if num_courts:
-            params.append(f"Terrains: {num_courts}")
-        if planned:
-            params.append(f"Parties prévues: {planned}")
-        params.append("Score: 13 points")
-        params.append("Exempt: 13–7")
-        story.append(Paragraph(" | ".join(params), styles["BodyText"]))
-        story.append(Spacer(1, 6 * mm))
-
-        if plan:
-            story.append(Paragraph("Plan des parties", styles["Heading2"]))
-            plan_rows = [["Partie", "Format", "Mode tirage"]]
-            for row in plan:
-                plan_rows.append(
-                    [
-                        str(row.get("round_number", "")),
-                        str(row.get("format", "")),
-                        str(row.get("draw_mode", "")),
-                    ]
-                )
-            t = Table(plan_rows, colWidths=[20 * mm, 40 * mm, 110 * mm])
-            t.setStyle(
-                TableStyle(
-                    [
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2F2F2F")),
-                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
-                        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
-                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ]
-                )
-            )
-            story.append(t)
-            story.append(Spacer(1, 8 * mm))
+        story.append(Spacer(1, 8 * mm))
 
         story.append(Paragraph("Classement", styles["Heading2"]))
+
         rank_rows = [["#", "Joueur", "V", "Plus", "Moins", "Diff"]]
         for i, s in enumerate(ranking, start=1):
             rank_rows.append([str(i), str(s.name), str(s.wins), str(s.plus), str(s.minus), str(s.ga)])
