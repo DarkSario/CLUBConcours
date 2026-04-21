@@ -36,8 +36,8 @@ class RankingTab(QWidget):
         layout = QVBoxLayout(self)
 
         top = QHBoxLayout()
-        self.title = QLabel("Classement")
-        self.title.setStyleSheet("font-weight: 600;")
+        self.title = QLabel("Classement Général")
+        self.title.setStyleSheet("font-weight: 700; font-size: 18px;")
         top.addWidget(self.title)
 
         top.addStretch(1)
@@ -49,7 +49,9 @@ class RankingTab(QWidget):
         layout.addLayout(top)
 
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["#", "Joueur", "Victoires", "Plus", "Moins", "Diff"])
+        self.table.setHorizontalHeaderLabels(
+            ["Rang", "Joueur", "Victoires", "Points gagnés", "Points perdus", "Goal Average"]
+        )
         self.table.setAlternatingRowColors(True)
         self.table.setSortingEnabled(False)
         layout.addWidget(self.table)
@@ -143,14 +145,14 @@ class RankingTab(QWidget):
             story.append(Paragraph(" — ".join(subtitle_parts), styles["Heading3"]))
         story.append(Spacer(1, 8 * mm))
 
-        story.append(Paragraph("Classement", styles["Heading2"]))
+        story.append(Paragraph("Classement Général", styles["Heading2"]))
 
-        rank_rows = [["#", "Joueur", "V", "Plus", "Moins", "Diff"]]
+        rank_rows = [["Rang", "Joueur", "Victoires", "Points gagnés", "Points perdus", "Goal Average"]]
         for i, s in enumerate(ranking, start=1):
             rank_rows.append([str(i), str(s.name), str(s.wins), str(s.plus), str(s.minus), str(s.ga)])
 
-        t2 = Table(rank_rows, colWidths=[10 * mm, 70 * mm, 15 * mm, 20 * mm, 20 * mm, 20 * mm])
-        t2.setStyle(
+        t = Table(rank_rows, colWidths=[14 * mm, 78 * mm, 22 * mm, 26 * mm, 26 * mm, 26 * mm])
+        t.setStyle(
             TableStyle(
                 [
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1B4D8C")),
@@ -165,7 +167,7 @@ class RankingTab(QWidget):
                 ]
             )
         )
-        story.append(t2)
+        story.append(t)
         story.append(Spacer(1, 6 * mm))
 
         story.append(
