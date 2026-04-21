@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 
@@ -49,12 +49,11 @@ class ExportTab(QWidget):
 
         title_row = QHBoxLayout()
         title = QLabel("Export PDF")
-        title.setStyleSheet("font-weight: 600;")
+        title.setStyleSheet("font-weight: 700; font-size: 16px;")
         title_row.addWidget(title)
         title_row.addStretch(1)
         layout.addLayout(title_row)
 
-        # Round selection row
         sel_row = QHBoxLayout()
         sel_row.addWidget(QLabel("Partie à exporter (0 = toutes):"))
         self.spin_round = QSpinBox()
@@ -199,37 +198,99 @@ class ExportTab(QWidget):
             out = out.with_suffix(".pdf")
         return out
 
-    # ---------------- PDF building blocks ----------------
+    # ---------------- PDF helpers ----------------
 
     def _make_doc(self, out_path: Path, title: str) -> SimpleDocTemplate:
         return SimpleDocTemplate(
             str(out_path),
             pagesize=A4,
-            leftMargin=18 * mm,
-            rightMargin=18 * mm,
-            topMargin=16 * mm,
-            bottomMargin=16 * mm,
+            leftMargin=14 * mm,
+            rightMargin=14 * mm,
+            topMargin=14 * mm,
+            bottomMargin=14 * mm,
             title=title,
         )
 
+    def _styles(self):
+        styles = getSampleStyleSheet()
+
+        styles.add(
+            ParagraphStyle(
+                name="Small",
+                parent=styles["BodyText"],
+                fontSize=9,
+                leading=11,
+            )
+        )
+        styles.add(
+            ParagraphStyle(
+                name="TitleCenter",
+                parent=styles["Title"],
+                alignment=1,  # CENTER
+            )
+        )
+        styles.add(
+            ParagraphStyle(
+                name="H2Center",
+                parent=styles["Heading2"],
+                alignment=1,
+            )
+        )
+        styles.add(
+            ParagraphStyle(
+                name="H3Center",
+                parent=styles["Heading3"],
+                alignment=1,
+            )
+        )
+        styles.add(
+            ParagraphStyle(
+                name="SmallCenter",
+                parent=styles["Small"],
+                alignment=1,
+            )
+        )
+        return styles
+
     def _append_header(self, story: list, styles) -> None:
         name, d, loc = self._tournament_header()
-        story.append(Paragraph(name, styles["Title"]))
+        story.append(Paragraph(name, styles["TitleCenter"]))
+
         subtitle_parts = [p for p in [d, loc] if p]
         if subtitle_parts:
-            story.append(Paragraph(" — ".join(subtitle_parts), styles["Heading3"]))
+            story.append(Paragraph(" — ".join(subtitle_parts), styles["SmallCenter"]))
+
         story.append(Spacer(1, 6 * mm))
 
     def _append_params(self, story: list, styles) -> None:
-        story.append(Paragraph(self._params_line(), styles["BodyText"]))
+        story.append(Paragraph(self._params_line(), styles["SmallCenter"]))
         story.append(Spacer(1, 6 * mm))
+
+    def _table_style_header(self, bg_hex: str):
+        return TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(bg_hex)),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 10),
+                ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#B0B0B0")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.HexColor("#E7E7E7")]),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
 
     def _append_plan(self, story: list, styles) -> None:
         plan = self._load_plan()
-        story.append(Paragraph("Plan des parties", styles["Heading2"]))
+        story.append(Paragraph("Plan des parties", styles["H2Center"]))
+        story.append(Spacer(1, 2 * mm))
 
         if not plan:
-            story.append(Paragraph("(Aucun plan enregistré)", styles["BodyText"]))
+            story.append(Paragraph("(Aucun plan enregistré)", styles["SmallCenter"]))
             story.append(Spacer(1, 6 * mm))
             return
 
@@ -237,17 +298,14 @@ class ExportTab(QWidget):
         for r in plan:
             rows.append([str(r.get("round_number", "")), str(r.get("format", "")), str(r.get("draw_mode", ""))])
 
-        t = Table(rows, colWidths=[20 * mm, 40 * mm, 110 * mm])
+        t = Table(rows, colWidths=[18 * mm, 34 * mm, 130 * mm], hAlign="CENTER")
+        t.setStyle(self._table_style_header("#2F2F2F"))
         t.setStyle(
             TableStyle(
                 [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2F2F2F")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("ALIGN", (0, 0), (-1, 0), "CENTER"),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 1), (0, -1), "CENTER"),
+                    ("ALIGN", (1, 1), (1, -1), "CENTER"),
+                    ("ALIGN", (2, 1), (2, -1), "LEFT"),
                 ]
             )
         )
@@ -256,26 +314,21 @@ class ExportTab(QWidget):
 
     def _append_ranking(self, story: list, styles) -> None:
         ranking = compute_player_ranking(self.conn)
-
-        story.append(Paragraph("Classement Général", styles["Heading2"]))
+        story.append(Paragraph("Classement Général", styles["H2Center"]))
+        story.append(Spacer(1, 2 * mm))
 
         rows = [["Rang", "Joueur", "Victoires", "Points gagnés", "Points perdus", "Goal Average"]]
         for i, s in enumerate(ranking, start=1):
             rows.append([str(i), str(s.name), str(s.wins), str(s.plus), str(s.minus), str(s.ga)])
 
-        t = Table(rows, colWidths=[14 * mm, 78 * mm, 22 * mm, 26 * mm, 26 * mm, 26 * mm])
+        t = Table(rows, colWidths=[14 * mm, 78 * mm, 20 * mm, 26 * mm, 26 * mm, 26 * mm], hAlign="CENTER")
+        t.setStyle(self._table_style_header("#1B4D8C"))
         t.setStyle(
             TableStyle(
                 [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1B4D8C")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("ALIGN", (0, 0), (-1, 0), "CENTER"),
                     ("ALIGN", (0, 1), (0, -1), "CENTER"),
                     ("ALIGN", (2, 1), (-1, -1), "CENTER"),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (1, 1), (1, -1), "LEFT"),
                 ]
             )
         )
@@ -285,13 +338,13 @@ class ExportTab(QWidget):
     def _append_validated_rounds(self, story: list, styles, only_round_number: int | None) -> None:
         lines = self._validated_matches_lines(only_round_number)
 
-        story.append(Paragraph("Parties (matchs validés)", styles["Heading2"]))
+        story.append(Paragraph("Parties (matchs validés)", styles["H2Center"]))
         if only_round_number is not None:
-            story.append(Paragraph(f"Filtre: Partie {only_round_number}", styles["BodyText"]))
-            story.append(Spacer(1, 2 * mm))
+            story.append(Paragraph(f"Filtre: Partie {only_round_number}", styles["SmallCenter"]))
+        story.append(Spacer(1, 6 * mm))
 
         if not lines:
-            story.append(Paragraph("Aucun match validé.", styles["BodyText"]))
+            story.append(Paragraph("Aucun match validé.", styles["SmallCenter"]))
             story.append(Spacer(1, 6 * mm))
             return
 
@@ -303,33 +356,32 @@ class ExportTab(QWidget):
             if not block or current_rn is None:
                 return
 
-            story.append(Paragraph(f"Partie {current_rn}", styles["Heading3"]))
-            rows = [["Match", "Terrain", "Joueur(s) 1", "Joueur(s) 2", "Score"]]
+            story.append(Paragraph(f"Partie {current_rn}", styles["H3Center"]))
+            story.append(Spacer(1, 2 * mm))
+
+            rows = [["Match", "Terrain", "Équipe 1", "Équipe 2", "Score"]]
             for m in block:
                 court_txt = "" if m.court_number is None else str(m.court_number)
+                score_txt = f"{m.score1}–{m.score2}"
                 if m.team2 is None:
-                    rows.append([str(m.match_id), court_txt, m.team1, "EXEMPT", f"{m.score1}–{m.score2}"])
+                    rows.append([str(m.match_id), court_txt, m.team1, "EXEMPT", score_txt])
                 else:
-                    rows.append([str(m.match_id), court_txt, m.team1, m.team2, f"{m.score1}–{m.score2}"])
+                    rows.append([str(m.match_id), court_txt, m.team1, m.team2, score_txt])
 
-            t = Table(rows, colWidths=[16 * mm, 18 * mm, 62 * mm, 62 * mm, 22 * mm])
+            t = Table(rows, colWidths=[14 * mm, 16 * mm, 70 * mm, 70 * mm, 20 * mm], hAlign="CENTER")
+            t.setStyle(self._table_style_header("#3A3A3A"))
             t.setStyle(
                 TableStyle(
                     [
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#3A3A3A")),
-                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
                         ("ALIGN", (0, 1), (1, -1), "CENTER"),
-                        ("ALIGN", (-1, 1), (-1, -1), "CENTER"),
-                        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
-                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("ALIGN", (4, 1), (4, -1), "CENTER"),
+                        ("ALIGN", (2, 1), (3, -1), "LEFT"),
+                        ("FONTSIZE", (0, 1), (-1, -1), 9),
                     ]
                 )
             )
             story.append(t)
-            story.append(Spacer(1, 6 * mm))
+            story.append(Spacer(1, 8 * mm))
 
             block = []
 
@@ -341,12 +393,8 @@ class ExportTab(QWidget):
         flush_block()
 
     def _append_footer_generated(self, story: list, styles) -> None:
-        story.append(
-            Paragraph(
-                f"Généré le {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                styles["BodyText"],
-            )
-        )
+        story.append(Spacer(1, 2 * mm))
+        story.append(Paragraph(f"Généré le {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles["SmallCenter"]))
 
     # ---------------- actions ----------------
 
@@ -357,7 +405,7 @@ class ExportTab(QWidget):
             return
 
         try:
-            styles = getSampleStyleSheet()
+            styles = self._styles()
             story: list = []
             doc = self._make_doc(out, f"{name} - Classement (complet)")
 
@@ -383,7 +431,7 @@ class ExportTab(QWidget):
             return
 
         try:
-            styles = getSampleStyleSheet()
+            styles = self._styles()
             story: list = []
             doc = self._make_doc(out, f"{name} - Parties validées")
 
@@ -407,7 +455,7 @@ class ExportTab(QWidget):
             return
 
         try:
-            styles = getSampleStyleSheet()
+            styles = self._styles()
             story: list = []
             doc = self._make_doc(out, f"{name} - FINAL")
 
@@ -422,7 +470,6 @@ class ExportTab(QWidget):
             self._append_ranking(story, styles)
 
             self._append_footer_generated(story, styles)
-
             doc.build(story)
         except Exception as e:
             QMessageBox.critical(self, "Export PDF", f"Erreur: {e}")
