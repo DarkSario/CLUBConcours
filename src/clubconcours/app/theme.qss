@@ -1,0 +1,187 @@
+/* CLUBConcours - Dark theme (no dependency) */
+
+* {
+  font-family: "Segoe UI", "Inter", "Arial";
+  font-size: 10.5pt;
+  color: #E5E7EB;
+}
+
+QMainWindow, QDialog, QWidget {
+  background-color: #111827;
+}
+
+/* ---------- Titles / Labels ---------- */
+QLabel { color: #E5E7EB; }
+QLabel#pageTitle { font-size: 16pt; font-weight: 700; }
+QLabel#muted { color: #9CA3AF; }
+
+/* ---------- Tabs ---------- */
+QTabWidget::pane {
+  border: 1px solid #1F2937;
+  border-radius: 10px;
+  background: #0F172A;
+  padding: 6px;
+}
+
+QTabBar::tab {
+  background: #111827;
+  border: 1px solid #1F2937;
+  padding: 8px 12px;
+  margin-right: 6px;
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+  color: #9CA3AF;
+}
+
+QTabBar::tab:selected {
+  background: #0B1220;
+  color: #E5E7EB;
+  border-bottom-color: #0B1220;
+}
+
+QTabBar::tab:hover {
+  color: #E5E7EB;
+  border-color: #334155;
+}
+
+/* ---------- Buttons ---------- */
+QPushButton {
+  background-color: #1F2937;
+  border: 1px solid #374151;
+  padding: 7px 12px;
+  border-radius: 10px;
+}
+QPushButton:hover { background-color: #273449; border-color: #4B5563; }
+QPushButton:pressed { background-color: #111827; }
+QPushButton:disabled { color: #6B7280; background-color: #111827; border-color: #1F2937; }
+
+/* Primary action button (set property primary=true) */
+QPushButton[primary="true"] {
+  background-color: #2563EB;
+  border-color: #1D4ED8;
+  font-weight: 700;
+}
+QPushButton[primary="true"]:hover { background-color: #1D4ED8; }
+
+/* Danger button (set property danger=true) */
+QPushButton[danger="true"] {
+  background-color: #7F1D1D;
+  border-color: #991B1B;
+  font-weight: 700;
+}
+QPushButton[danger="true"]:hover { background-color: #991B1B; }
+
+/* ---------- Inputs (base) ---------- */
+QLineEdit, QPlainTextEdit, QTextEdit, QDateEdit, QComboBox, QSpinBox {
+  background-color: #0B1220;
+  border: 1px solid #1F2937;
+  border-radius: 10px;
+  padding: 4px 8px;
+  min-height: 28px;
+  selection-background-color: #2563EB;
+}
+
+QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus, QDateEdit:focus, QComboBox:focus {
+  border-color: #2563EB;
+}
+
+/* ---------- ComboBox (normal) ---------- */
+QComboBox { padding-right: 26px; }
+QComboBox::drop-down {
+  border-left: 1px solid #1F2937;
+  width: 18px;
+}
+QComboBox QAbstractItemView {
+  background-color: #0B1220;
+  border: 1px solid #1F2937;
+  selection-background-color: #2563EB;
+  outline: 0;
+}
+
+/* ---------- SpinBox (keep arrows visible + larger clickable area) ---------- */
+/*
+  IMPORTANT:
+  We DO NOT style ::up-button/::down-button here (Windows can hide arrows).
+  We only reserve space and keep default subcontrols visible.
+*/
+QSpinBox {
+  padding-right: 28px; /* space for the native arrows area */
+}
+
+/* ---------- Tables ---------- */
+QTableWidget {
+  background-color: #0B1220;
+  border: 1px solid #1F2937;
+  border-radius: 10px;
+  gridline-color: #1F2937;
+}
+
+QHeaderView::section {
+  background-color: #111827;
+  color: #E5E7EB;
+  padding: 6px 8px;
+  border: 0;
+  border-right: 1px solid #1F2937;
+  border-bottom: 1px solid #1F2937;
+  font-weight: 700;
+}
+
+QTableWidget::item { padding: 4px; }
+
+QTableWidget::item:selected {
+  background-color: #1D4ED8;
+  color: #FFFFFF;
+}
+
+QTableWidget::item:hover {
+  background-color: #111827;
+}
+
+/* FIX "double boxes": make comboboxes inside tables flat/transparent */
+QTableWidget QComboBox {
+  background: transparent;
+  border: 0;
+  padding: 0px 18px 0px 6px;   /* left padding for text + reserve arrow space */
+  min-height: 24px;
+}
+
+QTableWidget QComboBox::drop-down {
+  border: 0;
+  width: 16px;
+  background: transparent;
+}
+
+QTableWidget QComboBox::down-arrow {
+  /* keep default arrow but ensure it stays visible on dark */
+  /* if still too dark, we can switch to an image arrow later */
+}
+
+QTableWidget QComboBox QAbstractItemView {
+  background-color: #0B1220;
+  border: 1px solid #1F2937;
+  selection-background-color: #2563EB;
+  outline: 0;
+}
+
+/* ---------- Scrollbars ---------- */
+QScrollBar:vertical {
+  background: #0B1220;
+  width: 12px;
+  margin: 0;
+}
+QScrollBar::handle:vertical {
+  background: #1F2937;
+  border-radius: 6px;
+  min-height: 20px;
+}
+QScrollBar::handle:vertical:hover { background: #374151; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+
+/* ---------- Tooltips ---------- */
+QToolTip {
+  background-color: #111827;
+  color: #E5E7EB;
+  border: 1px solid #374151;
+  padding: 6px;
+  border-radius: 8px;
+}
