@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Signal
+
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -25,6 +26,20 @@ from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 
 from clubconcours.core.ranking import compute_player_ranking
+
+
+# ---- Friendly labels used in exports (same meaning as UI) ----
+FORMAT_LABELS: dict[str, str] = {
+    "SINGLE": "Tête-à-tête",
+    "DOUBLETTE": "Doublette",
+    "TRIPLETTE": "Triplette",
+}
+
+DRAW_MODE_LABELS: dict[str, str] = {
+    "RANDOM": "Aléatoire",
+    "AVOID_DUPLICATES": "Éviter les doublons",
+    "SWISS_BY_WINS": "Suisse (par victoires)",
+}
 
 
 @dataclass
@@ -121,6 +136,20 @@ class ExportTab(QWidget):
             return json.loads(plan_json)
         except Exception:
             return []
+
+    def _round_meta(self, round_number: int) -> tuple[str | None, str | None]:
+        """
+        Returns (format_code, draw_mode_code) from rounds table for a given round number.
+        """
+        r = self.conn.execute(
+            "SELECT format, draw_mode FROM rounds WHERE number=?",
+            (int(round_number),),
+        ).fetchone()
+        if r is None:
+            return None, None
+        fmt = r["format"]
+        mode = r["draw_mode"]
+        return (str(fmt) if fmt is not None else None, str(mode) if mode is not None else None)
 
     # ---------------- data extraction ----------------
 
@@ -222,49 +251,11 @@ class ExportTab(QWidget):
                 leading=11,
             )
         )
-        styles.add(
-            ParagraphStyle(
-                name="TitleCenter",
-                parent=styles["Title"],
-                alignment=1,  # CENTER
-            )
-        )
-        styles.add(
-            ParagraphStyle(
-                name="H2Center",
-                parent=styles["Heading2"],
-                alignment=1,
-            )
-        )
-        styles.add(
-            ParagraphStyle(
-                name="H3Center",
-                parent=styles["Heading3"],
-                alignment=1,
-            )
-        )
-        styles.add(
-            ParagraphStyle(
-                name="SmallCenter",
-                parent=styles["Small"],
-                alignment=1,
-            )
-        )
+        styles.add(ParagraphStyle(name="TitleCenter", parent=styles["Title"], alignment=1))
+        styles.add(ParagraphStyle(name="H2Center", parent=styles["Heading2"], alignment=1))
+        styles.add(ParagraphStyle(name="H3Center", parent=styles["Heading3"], alignment=1))
+        styles.add(ParagraphStyle(name="SmallCenter", parent=styles["Small"], alignment=1))
         return styles
-
-    def _append_header(self, story: list, styles) -> None:
-        name, d, loc = self._tournament_header()
-        story.append(Paragraph(name, styles["TitleCenter"]))
-
-        subtitle_parts = [p for p in [d, loc] if p]
-        if subtitle_parts:
-            story.append(Paragraph(" — ".join(subtitle_parts), styles["SmallCenter"]))
-
-        story.append(Spacer(1, 6 * mm))
-
-    def _append_params(self, story: list, styles) -> None:
-        story.append(Paragraph(self._params_line(), styles["SmallCenter"]))
-        story.append(Spacer(1, 6 * mm))
 
     def _table_style_header(self, bg_hex: str):
         return TableStyle(
@@ -284,6 +275,20 @@ class ExportTab(QWidget):
             ]
         )
 
+    def _append_header(self, story: list, styles) -> None:
+        name, d, loc = self._tournament_header()
+        story.append(Paragraph(name, styles["TitleCenter"]))
+
+        subtitle_parts = [p for p in [d, loc] if p]
+        if subtitle_parts:
+            story.append(Paragraph(" — ".join(subtitle_parts), styles["SmallCenter"]))
+
+        story.append(Spacer(1, 6 * mm))
+
+    def _append_params(self, story: list, styles) -> None:
+        story.append(Paragraph(self._params_line(), styles["SmallCenter"]))
+        story.append(Spacer(1, 6 * mm))
+
     def _append_plan(self, story: list, styles) -> None:
         plan = self._load_plan()
         story.append(Paragraph("Plan des parties", styles["H2Center"]))
@@ -296,16 +301,20 @@ class ExportTab(QWidget):
 
         rows = [["Partie", "Format", "Mode tirage"]]
         for r in plan:
-            rows.append([str(r.get("round_number", "")), str(r.get("format", "")), str(r.get("draw_mode", ""))])
+            fmt_code = str(r.get("format", ""))
+            mode_code = str(r.get("draw_mode", ""))
+            fmt_lbl = FORMAT_LABELS.get(fmt_code, fmt_code)
+            mode_lbl = DRAW_MODE_LABELS.get(mode_code, mode_code)
+            rows.append([str(r.get("round_number", "")), fmt_lbl, mode_lbl])
 
-        t = Table(rows, colWidths=[18 * mm, 34 * mm, 130 * mm], hAlign="CENTER")
+        t = Table(rows, colWidths=[18 * mm, 52 * mm, 112 * mm], hAlign="CENTER")
         t.setStyle(self._table_style_header("#2F2F2F"))
         t.setStyle(
             TableStyle(
                 [
                     ("ALIGN", (0, 1), (0, -1), "CENTER"),
                     ("ALIGN", (1, 1), (1, -1), "CENTER"),
-                    ("ALIGN", (2, 1), (2, -1), "LEFT"),
+                    ("ALIGN", (2, 1), (2, -1), "CENTER"),
                 ]
             )
         )
@@ -356,7 +365,14 @@ class ExportTab(QWidget):
             if not block or current_rn is None:
                 return
 
+            # Round meta
+            fmt_code, mode_code = self._round_meta(current_rn)
+            fmt_lbl = FORMAT_LABELS.get(fmt_code or "", fmt_code or "")
+            mode_lbl = DRAW_MODE_LABELS.get(mode_code or "", mode_code or "")
+
             story.append(Paragraph(f"Partie {current_rn}", styles["H3Center"]))
+            if fmt_lbl or mode_lbl:
+                story.append(Paragraph(f"{fmt_lbl}  |  {mode_lbl}", styles["SmallCenter"]))
             story.append(Spacer(1, 2 * mm))
 
             rows = [["Match", "Terrain", "Équipe 1", "Équipe 2", "Score"]]
