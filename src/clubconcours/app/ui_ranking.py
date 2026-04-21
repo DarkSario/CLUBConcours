@@ -68,11 +68,11 @@ class RankingTab(QWidget):
         for i, s in enumerate(ranking, start=1):
             items = [
                 QTableWidgetItem(str(i)),
-                QTableWidgetItem(str(s.player_name)),
+                QTableWidgetItem(str(s.name)),
                 QTableWidgetItem(str(s.wins)),
                 QTableWidgetItem(str(s.plus)),
                 QTableWidgetItem(str(s.minus)),
-                QTableWidgetItem(str(s.plus - s.minus)),
+                QTableWidgetItem(str(s.ga)),
             ]
             for j, it in enumerate(items):
                 it.setFlags(it.flags() & ~Qt.ItemIsEditable)
@@ -83,7 +83,6 @@ class RankingTab(QWidget):
         self.table.resizeColumnsToContents()
 
     def _export_pdf(self) -> None:
-        # build data
         tournament_name = self._meta_get("tournament_name") or "CLUBConcours"
         tournament_date = self._meta_get("tournament_date") or ""
         tournament_location = self._meta_get("tournament_location") or ""
@@ -98,7 +97,6 @@ class RankingTab(QWidget):
 
         ranking = compute_player_ranking(self.conn)
 
-        # choose file
         default_name = f"{tournament_name}_classement.pdf".replace("/", "-").replace("\\", "-")
         filename, _ = QFileDialog.getSaveFileName(
             self,
@@ -160,7 +158,6 @@ class RankingTab(QWidget):
             story.append(Paragraph(" — ".join(subtitle_parts), styles["Heading3"]))
         story.append(Spacer(1, 6 * mm))
 
-        # Params
         params = []
         if num_courts:
             params.append(f"Terrains: {num_courts}")
@@ -171,7 +168,6 @@ class RankingTab(QWidget):
         story.append(Paragraph(" | ".join(params), styles["BodyText"]))
         story.append(Spacer(1, 6 * mm))
 
-        # Plan table
         if plan:
             story.append(Paragraph("Plan des parties", styles["Heading2"]))
             plan_rows = [["Partie", "Format", "Mode tirage"]]
@@ -200,20 +196,10 @@ class RankingTab(QWidget):
             story.append(t)
             story.append(Spacer(1, 8 * mm))
 
-        # Ranking table
         story.append(Paragraph("Classement", styles["Heading2"]))
         rank_rows = [["#", "Joueur", "V", "Plus", "Moins", "Diff"]]
         for i, s in enumerate(ranking, start=1):
-            rank_rows.append(
-                [
-                    str(i),
-                    str(s.player_name),
-                    str(s.wins),
-                    str(s.plus),
-                    str(s.minus),
-                    str(s.plus - s.minus),
-                ]
-            )
+            rank_rows.append([str(i), str(s.name), str(s.wins), str(s.plus), str(s.minus), str(s.ga)])
 
         t2 = Table(rank_rows, colWidths=[10 * mm, 70 * mm, 15 * mm, 20 * mm, 20 * mm, 20 * mm])
         t2.setStyle(
