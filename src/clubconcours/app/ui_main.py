@@ -9,6 +9,7 @@ from clubconcours.app.ui_players import PlayersTab
 from clubconcours.app.ui_concours import ConcoursTab
 from clubconcours.app.ui_draw import DrawTab
 from clubconcours.app.ui_round_tab import RoundTab
+from clubconcours.app.ui_ranking import RankingTab  # NEW
 
 
 class MainWindow(QMainWindow):
@@ -29,10 +30,12 @@ class MainWindow(QMainWindow):
         self.players_tab = PlayersTab(self.conn)
         self.concours_tab = ConcoursTab(self.conn)
         self.draw_tab = DrawTab(self.conn)
+        self.ranking_tab = RankingTab(self.conn)  # NEW
 
         self.tabs.addTab(self.players_tab, "Inscription")
         self.tabs.addTab(self.concours_tab, "Concours")
         self.tabs.addTab(self.draw_tab, "Tirage")
+        self.tabs.addTab(self.ranking_tab, "Classement")  # NEW
 
         self.round_tabs: dict[int, RoundTab] = {}
 
@@ -55,6 +58,7 @@ class MainWindow(QMainWindow):
         self.players_tab.refresh()
         self.concours_tab.refresh()
         self.draw_tab.refresh()
+        self.ranking_tab.refresh()  # NEW
         self._sync_round_tabs()
 
     def _sync_round_tabs(self) -> None:

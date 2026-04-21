@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import sqlite3
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -17,6 +17,9 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QMessageBox,
+    QLineEdit,
+    QFormLayout,
+    QDateEdit,
 )
 
 from clubconcours.storage import db
@@ -39,7 +42,6 @@ class BootDialog(QDialog):
         self.db_path: Path | None = None
 
         layout = QVBoxLayout(self)
-
         layout.addWidget(QLabel("Choisis une option pour démarrer :"))
 
         # Buttons row
@@ -54,6 +56,24 @@ class BootDialog(QDialog):
 
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
+
+        layout.addWidget(QLabel("Nouveau tournoi : informations"))
+
+        form = QFormLayout()
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("Ex: Concours du vendredi")
+        form.addRow("Nom du concours:", self.name_edit)
+
+        self.date_edit = QDateEdit()
+        self.date_edit.setCalendarPopup(True)
+        self.date_edit.setDate(date.today())
+        form.addRow("Date:", self.date_edit)
+
+        self.location_edit = QLineEdit()
+        self.location_edit.setPlaceholderText("Ex: Boulodrome municipal – Club XYZ")
+        form.addRow("Lieu / Club:", self.location_edit)
+
+        layout.addLayout(form)
 
         layout.addWidget(QLabel("Nouveau tournoi : paramètres"))
 
@@ -136,7 +156,6 @@ class BootDialog(QDialog):
             QMessageBox.critical(self, "Importer", "Fichier introuvable.")
             return
 
-        # quick sanity check (openable)
         try:
             conn = db.connect(str(p))
             db.init_db(conn)
@@ -162,7 +181,14 @@ class BootDialog(QDialog):
         if p.suffix.lower() != ".db":
             p = p.with_suffix(".db")
 
-        # create / init db
+        tournament_name = self.name_edit.text().strip()
+        tournament_date = self.date_edit.date().toPython().isoformat()
+        tournament_location = self.location_edit.text().strip()
+
+        if not tournament_name:
+            QMessageBox.warning(self, "Nouveau tournoi", "Le nom du concours est obligatoire.")
+            return
+
         try:
             conn = db.connect(str(p))
             db.init_db(conn)
@@ -173,6 +199,24 @@ class BootDialog(QDialog):
             planned = int(self.spin_rounds.value())
             plan = self._build_plan()
 
+            # Tournament info
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('tournament_name', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (tournament_name,),
+            )
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('tournament_date', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (tournament_date,),
+            )
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('tournament_location', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (tournament_location,),
+            )
+
+            # Contest plan
             conn.execute(
                 "INSERT INTO meta(key, value) VALUES('num_rounds_planned', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
