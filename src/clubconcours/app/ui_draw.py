@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -17,6 +17,18 @@ from PySide6.QtWidgets import (
 
 from clubconcours.core.draw import RoundConfig, draw_round
 from clubconcours.storage.repositories import PlayerRepo
+
+DRAW_MODE_LABELS: dict[str, str] = {
+    "RANDOM": "Aléatoire",
+    "AVOID_DUPLICATES": "Éviter les doublons",
+    "SWISS_BY_WINS": "Suisse (par victoires)",
+}
+
+DRAW_MODE_HELP: dict[str, str] = {
+    "RANDOM": "Tirage totalement aléatoire (aucune contrainte).",
+    "AVOID_DUPLICATES": "Essaye d’éviter que des joueurs rejouent ensemble trop souvent.",
+    "SWISS_BY_WINS": "Regroupe les joueurs selon le nombre de victoires (niveau similaire).",
+}
 
 
 class DrawTab(QWidget):
@@ -40,8 +52,8 @@ class DrawTab(QWidget):
 
         row.addWidget(QLabel("Mode tirage:"))
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["RANDOM", "AVOID_DUPLICATES", "SWISS_BY_WINS"])
-        self.mode_combo.setCurrentText("AVOID_DUPLICATES")
+        self._populate_mode_combo(self.mode_combo)
+        self._set_mode_combo_by_code(self.mode_combo, "AVOID_DUPLICATES")
         row.addWidget(self.mode_combo)
 
         self.btn_modify = QPushButton("Modifier")
@@ -55,6 +67,12 @@ class DrawTab(QWidget):
         row.addStretch(1)
         layout.addLayout(row)
 
+        self.mode_help = QLabel("")
+        self.mode_help.setStyleSheet("color: #666;")
+        layout.addWidget(self.mode_help)
+        self.mode_combo.currentIndexChanged.connect(self._update_mode_help)
+        self._update_mode_help()
+
         # Info line: shows what plan is being applied for next round
         self.plan_info = QLabel("")
         layout.addWidget(self.plan_info)
@@ -65,6 +83,25 @@ class DrawTab(QWidget):
 
         self._apply_edit_state()
         self.refresh()
+
+    def _populate_mode_combo(self, combo: QComboBox) -> None:
+        combo.clear()
+        for code in ["AVOID_DUPLICATES", "SWISS_BY_WINS", "RANDOM"]:
+            combo.addItem(DRAW_MODE_LABELS.get(code, code), code)
+            combo.setItemData(combo.count() - 1, DRAW_MODE_HELP.get(code, ""), role=Qt.ToolTipRole)
+
+    def _mode_code(self) -> str:
+        code = self.mode_combo.currentData()
+        return str(code) if code else "AVOID_DUPLICATES"
+
+    def _set_mode_combo_by_code(self, combo: QComboBox, code: str) -> None:
+        idx = combo.findData(code)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
+    def _update_mode_help(self) -> None:
+        code = self._mode_code()
+        self.mode_help.setText(DRAW_MODE_HELP.get(code, ""))
 
     def refresh(self) -> None:
         # If user did not unlock "Modifier", keep UI in sync with concours plan
@@ -128,12 +165,17 @@ class DrawTab(QWidget):
         if fmt:
             self.format_combo.setCurrentText(fmt)
         if mode:
-            self.mode_combo.setCurrentText(mode)
+            self._set_mode_combo_by_code(self.mode_combo, mode)
+
+        code = self._mode_code()
+        label = DRAW_MODE_LABELS.get(code, code)
 
         if fmt or mode:
-            self.plan_info.setText(f"Plan concours: Partie {rn} → {fmt or '?'} / {mode or '?'}")
+            self.plan_info.setText(f"Plan concours: Partie {rn} → {fmt or '?'} / {label}")
         else:
             self.plan_info.setText(f"Plan concours: Partie {rn} → (pas de plan enregistré)")
+
+        self._update_mode_help()
 
     def _draw(self) -> None:
         if not self._contest_initialized():
@@ -162,16 +204,16 @@ class DrawTab(QWidget):
             if fmt:
                 self.format_combo.setCurrentText(fmt)
             if mode:
-                self.mode_combo.setCurrentText(mode)
+                self._set_mode_combo_by_code(self.mode_combo, mode)
 
         fmt = self.format_combo.currentText()
-        mode = self.mode_combo.currentText()
+        mode_code = self._mode_code()
 
         try:
             round_id = draw_round(
                 self.conn,
                 round_number=round_number,
-                cfg=RoundConfig(format=fmt, draw_mode=mode),
+                cfg=RoundConfig(format=fmt, draw_mode=mode_code),
                 player_ids=[p.id for p in players],
             )
         except Exception as e:

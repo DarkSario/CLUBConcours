@@ -26,7 +26,20 @@ from clubconcours.storage import db
 from clubconcours.storage.repositories import RoundRepo
 
 FORMATS = ["SINGLE", "DOUBLETTE", "TRIPLETTE"]
-MODES = ["RANDOM", "AVOID_DUPLICATES", "SWISS_BY_WINS"]
+
+DRAW_MODE_LABELS: dict[str, str] = {
+    "RANDOM": "Aléatoire",
+    "AVOID_DUPLICATES": "Éviter les doublons",
+    "SWISS_BY_WINS": "Suisse (par victoires)",
+}
+
+DRAW_MODE_HELP: dict[str, str] = {
+    "RANDOM": "Tirage totalement aléatoire (aucune contrainte).",
+    "AVOID_DUPLICATES": "Essaye d’éviter que des joueurs rejouent ensemble trop souvent.",
+    "SWISS_BY_WINS": "Regroupe les joueurs selon le nombre de victoires (niveau similaire).",
+}
+
+MODES = ["AVOID_DUPLICATES", "SWISS_BY_WINS", "RANDOM"]
 
 
 class BootDialog(QDialog):
@@ -101,6 +114,11 @@ class BootDialog(QDialog):
         self.table.setAlternatingRowColors(True)
         layout.addWidget(self.table)
 
+        # Help under table
+        self.mode_help = QLabel("")
+        self.mode_help.setStyleSheet("color: #666;")
+        layout.addWidget(self.mode_help)
+
         # Bottom
         bottom = QHBoxLayout()
         bottom.addStretch(1)
@@ -110,6 +128,36 @@ class BootDialog(QDialog):
         layout.addLayout(bottom)
 
         self._resize_plan_table()
+        self._update_mode_help()
+
+    def _populate_mode_combo(self, combo: QComboBox) -> None:
+        combo.clear()
+        for code in MODES:
+            combo.addItem(DRAW_MODE_LABELS.get(code, code), code)
+            combo.setItemData(combo.count() - 1, DRAW_MODE_HELP.get(code, ""), role=Qt.ToolTipRole)
+
+    def _mode_code_from_combo(self, combo: QComboBox) -> str:
+        code = combo.currentData()
+        return str(code) if code else "AVOID_DUPLICATES"
+
+    def _set_mode_combo_by_code(self, combo: QComboBox, code: str) -> None:
+        idx = combo.findData(code)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
+    def _update_mode_help(self) -> None:
+        row = self.table.currentRow()
+        if row < 0:
+            row = 0 if self.table.rowCount() > 0 else -1
+
+        if row >= 0:
+            cb_mode = self.table.cellWidget(row, 2)
+            if isinstance(cb_mode, QComboBox):
+                code = self._mode_code_from_combo(cb_mode)
+                self.mode_help.setText(f"Explication : {DRAW_MODE_HELP.get(code, '')}")
+                return
+
+        self.mode_help.setText("")
 
     def _resize_plan_table(self) -> None:
         n = int(self.spin_rounds.value())
@@ -131,11 +179,14 @@ class BootDialog(QDialog):
             cb_mode = self.table.cellWidget(i, 2)
             if not isinstance(cb_mode, QComboBox):
                 cb_mode = QComboBox()
-                cb_mode.addItems(MODES)
-                cb_mode.setCurrentText("AVOID_DUPLICATES")
+                self._populate_mode_combo(cb_mode)
+                self._set_mode_combo_by_code(cb_mode, "AVOID_DUPLICATES")
+                cb_mode.currentIndexChanged.connect(self._update_mode_help)
                 self.table.setCellWidget(i, 2, cb_mode)
 
+        self.table.currentCellChanged.connect(lambda *_: self._update_mode_help())
         self.table.resizeColumnsToContents()
+        self._update_mode_help()
 
     def _build_plan(self) -> list[dict]:
         plan: list[dict] = []
@@ -143,7 +194,7 @@ class BootDialog(QDialog):
             cb_fmt = self.table.cellWidget(i, 1)
             cb_mode = self.table.cellWidget(i, 2)
             fmt = cb_fmt.currentText() if isinstance(cb_fmt, QComboBox) else "DOUBLETTE"
-            mode = cb_mode.currentText() if isinstance(cb_mode, QComboBox) else "AVOID_DUPLICATES"
+            mode = self._mode_code_from_combo(cb_mode) if isinstance(cb_mode, QComboBox) else "AVOID_DUPLICATES"
             plan.append({"round_number": i + 1, "format": fmt, "draw_mode": mode})
         return plan
 

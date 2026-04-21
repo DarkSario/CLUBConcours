@@ -10,17 +10,30 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QMessageBox,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QComboBox,
+    QMessageBox,
 )
 
 from clubconcours.storage.repositories import RoundRepo
 
 FORMATS = ["SINGLE", "DOUBLETTE", "TRIPLETTE"]
-MODES = ["RANDOM", "AVOID_DUPLICATES", "SWISS_BY_WINS"]
+
+DRAW_MODE_LABELS: dict[str, str] = {
+    "RANDOM": "Aléatoire",
+    "AVOID_DUPLICATES": "Éviter les doublons",
+    "SWISS_BY_WINS": "Suisse (par victoires)",
+}
+
+DRAW_MODE_HELP: dict[str, str] = {
+    "RANDOM": "Tirage totalement aléatoire (aucune contrainte).",
+    "AVOID_DUPLICATES": "Essaye d’éviter que des joueurs rejouent ensemble trop souvent.",
+    "SWISS_BY_WINS": "Regroupe les joueurs selon le nombre de victoires (niveau similaire).",
+}
+
+MODES = ["AVOID_DUPLICATES", "SWISS_BY_WINS", "RANDOM"]
 
 
 class ConcoursTab(QWidget):
@@ -33,35 +46,44 @@ class ConcoursTab(QWidget):
 
         layout = QVBoxLayout(self)
 
-        top = QHBoxLayout()
+        header = QHBoxLayout()
+        header.addWidget(QLabel("Paramètres concours"))
+        header.addStretch(1)
 
-        top.addWidget(QLabel("Nombre de terrains:"))
+        self.btn_save = QPushButton("Sauvegarder")
+        self.btn_save.clicked.connect(self._save)
+        header.addWidget(self.btn_save)
+
+        layout.addLayout(header)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Nombre de terrains:"))
         self.spin_courts = QSpinBox()
         self.spin_courts.setMinimum(1)
         self.spin_courts.setMaximum(999)
         self.spin_courts.setValue(12)
-        top.addWidget(self.spin_courts)
+        row.addWidget(self.spin_courts)
 
-        top.addWidget(QLabel("Nombre de parties:"))
+        row.addWidget(QLabel("Nombre de parties:"))
         self.spin_rounds = QSpinBox()
         self.spin_rounds.setMinimum(1)
         self.spin_rounds.setMaximum(50)
         self.spin_rounds.setValue(4)
         self.spin_rounds.valueChanged.connect(self._resize_plan_table)
-        top.addWidget(self.spin_rounds)
+        row.addWidget(self.spin_rounds)
 
-        top.addStretch(1)
-
-        self.btn_save = QPushButton("Enregistrer")
-        self.btn_save.clicked.connect(self._save)
-        top.addWidget(self.btn_save)
-
-        layout.addLayout(top)
+        row.addStretch(1)
+        layout.addLayout(row)
 
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Partie", "Format", "Mode tirage"])
         self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(False)
         layout.addWidget(self.table)
+
+        self.mode_help = QLabel("")
+        self.mode_help.setStyleSheet("color: #666;")
+        layout.addWidget(self.mode_help)
 
         self.refresh()
 
@@ -76,8 +98,41 @@ class ConcoursTab(QWidget):
             (key, value),
         )
 
+    def _populate_mode_combo(self, combo: QComboBox) -> None:
+        combo.clear()
+        for code in MODES:
+            combo.addItem(DRAW_MODE_LABELS.get(code, code), code)
+            combo.setItemData(combo.count() - 1, DRAW_MODE_HELP.get(code, ""), role=Qt.ToolTipRole)
+
+    def _mode_code_from_combo(self, combo: QComboBox) -> str:
+        code = combo.currentData()
+        return str(code) if code else "AVOID_DUPLICATES"
+
+    def _set_mode_combo_by_code(self, combo: QComboBox, code: str) -> None:
+        idx = combo.findData(code)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
+    def _update_mode_help(self) -> None:
+        row = self.table.currentRow()
+        if row < 0:
+            row = 0 if self.table.rowCount() > 0 else -1
+
+        if row >= 0:
+            cb_mode = self.table.cellWidget(row, 2)
+            if isinstance(cb_mode, QComboBox):
+                code = self._mode_code_from_combo(cb_mode)
+                self.mode_help.setText(f"Explication : {DRAW_MODE_HELP.get(code, '')}")
+                return
+        self.mode_help.setText("")
+
     def refresh(self) -> None:
-        self.spin_courts.setValue(self.rr.get_num_courts())
+        num_courts = self._meta_get("num_courts")
+        if num_courts is not None:
+            try:
+                self.spin_courts.setValue(int(num_courts))
+            except Exception:
+                pass
 
         planned = self._meta_get("num_rounds_planned")
         if planned is not None:
@@ -103,7 +158,6 @@ class ConcoursTab(QWidget):
                 fmt = plan[i].get("format", fmt)
                 mode = plan[i].get("draw_mode", mode)
 
-            # set row
             it_num = QTableWidgetItem(str(i + 1))
             it_num.setFlags(it_num.flags() & ~Qt.ItemIsEditable)
             it_num.setTextAlignment(Qt.AlignCenter)
@@ -115,9 +169,10 @@ class ConcoursTab(QWidget):
 
             cb_mode = self.table.cellWidget(i, 2)
             if isinstance(cb_mode, QComboBox):
-                cb_mode.setCurrentText(mode if mode in MODES else "AVOID_DUPLICATES")
+                self._set_mode_combo_by_code(cb_mode, mode if mode in MODES else "AVOID_DUPLICATES")
 
         self.table.resizeColumnsToContents()
+        self._update_mode_help()
 
     def _resize_plan_table(self) -> None:
         n = int(self.spin_rounds.value())
@@ -139,14 +194,16 @@ class ConcoursTab(QWidget):
             cb_mode = self.table.cellWidget(i, 2)
             if not isinstance(cb_mode, QComboBox):
                 cb_mode = QComboBox()
-                cb_mode.addItems(MODES)
-                cb_mode.setCurrentText("AVOID_DUPLICATES")
+                self._populate_mode_combo(cb_mode)
+                self._set_mode_combo_by_code(cb_mode, "AVOID_DUPLICATES")
+                cb_mode.currentIndexChanged.connect(self._update_mode_help)
                 self.table.setCellWidget(i, 2, cb_mode)
 
+        self.table.currentCellChanged.connect(lambda *_: self._update_mode_help())
         self.table.resizeColumnsToContents()
+        self._update_mode_help()
 
     def _save(self) -> None:
-        # Ensure rows match
         self._resize_plan_table()
 
         try:
@@ -158,7 +215,7 @@ class ConcoursTab(QWidget):
                 cb_fmt = self.table.cellWidget(i, 1)
                 cb_mode = self.table.cellWidget(i, 2)
                 fmt = cb_fmt.currentText() if isinstance(cb_fmt, QComboBox) else "DOUBLETTE"
-                mode = cb_mode.currentText() if isinstance(cb_mode, QComboBox) else "AVOID_DUPLICATES"
+                mode = self._mode_code_from_combo(cb_mode) if isinstance(cb_mode, QComboBox) else "AVOID_DUPLICATES"
                 plan.append({"round_number": i + 1, "format": fmt, "draw_mode": mode})
 
             self._meta_set("num_rounds_planned", str(planned))
@@ -170,5 +227,6 @@ class ConcoursTab(QWidget):
             QMessageBox.critical(self, "Concours", f"Erreur sauvegarde: {e}")
             return
 
-        QMessageBox.information(self, "Concours", "Plan concours enregistré.")
+        QMessageBox.information(self, "Concours", "Paramètres sauvegardés.")
+        self.refresh()
         self.data_changed.emit()
