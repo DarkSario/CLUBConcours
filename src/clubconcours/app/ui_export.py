@@ -28,7 +28,6 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from clubconcours.core.ranking import compute_player_ranking
 
 
-# ---- Friendly labels used in exports (same meaning as UI) ----
 FORMAT_LABELS: dict[str, str] = {
     "SINGLE": "Tête-à-tête",
     "DOUBLETTE": "Doublette",
@@ -40,6 +39,8 @@ DRAW_MODE_LABELS: dict[str, str] = {
     "AVOID_DUPLICATES": "Éviter les doublons",
     "SWISS_BY_WINS": "Suisse (par victoires)",
 }
+
+EXEMPT_LABELS: dict[str, str] = {"0-0": "0–0", "13-7": "13–7"}
 
 
 @dataclass
@@ -82,14 +83,19 @@ class ExportTab(QWidget):
         btn_row = QHBoxLayout()
 
         self.btn_rank_full = QPushButton("Exporter classement (complet)…")
+        self.btn_rank_full.setProperty("primary", True)
+        self.btn_rank_full.setToolTip("Exporter le classement + plan")
         self.btn_rank_full.clicked.connect(self._export_ranking_full)
         btn_row.addWidget(self.btn_rank_full)
 
         self.btn_validated = QPushButton("Exporter parties validées…")
+        self.btn_validated.setToolTip("Exporter les matchs avec validated=1")
         self.btn_validated.clicked.connect(self._export_validated_rounds)
         btn_row.addWidget(self.btn_validated)
 
         self.btn_final = QPushButton("Exporter FINAL (tout)…")
+        self.btn_final.setProperty("primary", True)
+        self.btn_final.setToolTip("Export complet (plan + parties validées + classement)")
         self.btn_final.clicked.connect(self._export_final)
         btn_row.addWidget(self.btn_final)
 
@@ -119,13 +125,15 @@ class ExportTab(QWidget):
     def _params_line(self) -> str:
         num_courts = self._meta_get("num_courts") or ""
         planned = self._meta_get("num_rounds_planned") or ""
+        exempt_mode = self._meta_get("exempt_score_mode") or "13-7"
+
         parts = []
         if num_courts:
             parts.append(f"Terrains: {num_courts}")
         if planned:
             parts.append(f"Parties prévues: {planned}")
         parts.append("Score: 13 points")
-        parts.append("Exempt: 13–7")
+        parts.append(f"Exempt: {EXEMPT_LABELS.get(exempt_mode, exempt_mode)}")
         return " | ".join(parts)
 
     def _load_plan(self) -> list[dict]:
@@ -138,9 +146,6 @@ class ExportTab(QWidget):
             return []
 
     def _round_meta(self, round_number: int) -> tuple[str | None, str | None]:
-        """
-        Returns (format_code, draw_mode_code) from rounds table for a given round number.
-        """
         r = self.conn.execute(
             "SELECT format, draw_mode FROM rounds WHERE number=?",
             (int(round_number),),
@@ -243,14 +248,7 @@ class ExportTab(QWidget):
     def _styles(self):
         styles = getSampleStyleSheet()
 
-        styles.add(
-            ParagraphStyle(
-                name="Small",
-                parent=styles["BodyText"],
-                fontSize=9,
-                leading=11,
-            )
-        )
+        styles.add(ParagraphStyle(name="Small", parent=styles["BodyText"], fontSize=9, leading=11))
         styles.add(ParagraphStyle(name="TitleCenter", parent=styles["Title"], alignment=1))
         styles.add(ParagraphStyle(name="H2Center", parent=styles["Heading2"], alignment=1))
         styles.add(ParagraphStyle(name="H3Center", parent=styles["Heading3"], alignment=1))
@@ -309,15 +307,7 @@ class ExportTab(QWidget):
 
         t = Table(rows, colWidths=[18 * mm, 52 * mm, 112 * mm], hAlign="CENTER")
         t.setStyle(self._table_style_header("#2F2F2F"))
-        t.setStyle(
-            TableStyle(
-                [
-                    ("ALIGN", (0, 1), (0, -1), "CENTER"),
-                    ("ALIGN", (1, 1), (1, -1), "CENTER"),
-                    ("ALIGN", (2, 1), (2, -1), "CENTER"),
-                ]
-            )
-        )
+        t.setStyle(TableStyle([("ALIGN", (0, 1), (-1, -1), "CENTER")]))
         story.append(t)
         story.append(Spacer(1, 8 * mm))
 
@@ -365,7 +355,6 @@ class ExportTab(QWidget):
             if not block or current_rn is None:
                 return
 
-            # Round meta
             fmt_code, mode_code = self._round_meta(current_rn)
             fmt_lbl = FORMAT_LABELS.get(fmt_code or "", fmt_code or "")
             mode_lbl = DRAW_MODE_LABELS.get(mode_code or "", mode_code or "")
@@ -398,7 +387,6 @@ class ExportTab(QWidget):
             )
             story.append(t)
             story.append(Spacer(1, 8 * mm))
-
             block = []
 
         for m in lines:

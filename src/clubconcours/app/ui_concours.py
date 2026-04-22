@@ -37,6 +37,9 @@ DRAW_MODE_HELP: dict[str, str] = {
 
 MODES = ["AVOID_DUPLICATES", "SWISS_BY_WINS", "RANDOM"]
 
+EXEMPT_MODES: list[str] = ["0-0", "13-7"]
+EXEMPT_LABELS: dict[str, str] = {"0-0": "0–0", "13-7": "13–7"}
+
 
 class ConcoursTab(QWidget):
     data_changed = Signal()
@@ -86,6 +89,12 @@ class ConcoursTab(QWidget):
         self.spin_rounds.setValue(4)
         self.spin_rounds.valueChanged.connect(self._resize_plan_table)
         row.addWidget(self.spin_rounds)
+
+        row.addWidget(QLabel("Score exempt:"))
+        self.combo_exempt = QComboBox()
+        for m in EXEMPT_MODES:
+            self.combo_exempt.addItem(EXEMPT_LABELS.get(m, m), m)
+        row.addWidget(self.combo_exempt)
 
         row.addStretch(1)
         layout.addLayout(row)
@@ -157,21 +166,15 @@ class ConcoursTab(QWidget):
         self.mode_help.setText("")
 
     def _refresh_dashboard(self) -> None:
-        players = self.conn.execute("SELECT COUNT(*) AS n FROM players").fetchone()
-        n_players = int(players["n"]) if players else 0
-
-        rounds = self.conn.execute("SELECT COUNT(*) AS n FROM rounds").fetchone()
-        n_rounds = int(rounds["n"]) if rounds else 0
-
-        validated = self.conn.execute("SELECT COUNT(*) AS n FROM matches WHERE validated=1").fetchone()
-        n_validated = int(validated["n"]) if validated else 0
-
+        n_players = int(self.conn.execute("SELECT COUNT(*) AS n FROM players").fetchone()["n"])
+        n_rounds = int(self.conn.execute("SELECT COUNT(*) AS n FROM rounds").fetchone()["n"])
+        n_validated = int(self.conn.execute("SELECT COUNT(*) AS n FROM matches WHERE validated=1").fetchone()["n"])
         planned = self._meta_get("num_rounds_planned") or "?"
         init = self._meta_get("contest_initialized") == "1"
-
+        exm = self._meta_get("exempt_score_mode") or "13-7"
         self.lbl_dash.setText(
             f"Joueurs: {n_players}  |  Parties créées: {n_rounds}  |  Matchs validés: {n_validated}  |  "
-            f"Plan: {planned}  |  Concours: {'OK' if init else 'NON'}"
+            f"Plan: {planned}  |  Concours: {'OK' if init else 'NON'}  |  Exempt: {EXEMPT_LABELS.get(exm, exm)}"
         )
 
     def refresh(self) -> None:
@@ -188,6 +191,11 @@ class ConcoursTab(QWidget):
                 self.spin_rounds.setValue(int(planned))
             except Exception:
                 pass
+
+        exm = self._meta_get("exempt_score_mode") or "13-7"
+        idx = self.combo_exempt.findData(exm)
+        if idx >= 0:
+            self.combo_exempt.setCurrentIndex(idx)
 
         plan_json = self._meta_get("round_plan_json")
         plan: list[dict] = []
@@ -267,9 +275,12 @@ class ConcoursTab(QWidget):
                 mode = self._mode_code_from_combo(cb_mode) if isinstance(cb_mode, QComboBox) else "AVOID_DUPLICATES"
                 plan.append({"round_number": i + 1, "format": fmt, "draw_mode": mode})
 
+            exm = self.combo_exempt.currentData() or "13-7"
+
             self._meta_set("num_rounds_planned", str(planned))
             self._meta_set("round_plan_json", json.dumps(plan, ensure_ascii=False))
             self._meta_set("contest_initialized", "1")
+            self._meta_set("exempt_score_mode", str(exm))
             self.conn.commit()
 
         except Exception as e:

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QListWidget,
     QMessageBox,
+    QFrame,
 )
 
 from clubconcours.storage.repositories import PlayerRepo
@@ -27,6 +28,17 @@ class PlayersTab(QWidget):
 
         layout = QVBoxLayout(self)
 
+        # Dashboard
+        self.card = QFrame()
+        self.card.setFrameShape(QFrame.StyledPanel)
+        self.card.setStyleSheet("QFrame { background:#0B1220; border:1px solid #1F2937; border-radius:10px; }")
+        card_l = QHBoxLayout(self.card)
+        self.lbl_dash = QLabel("")
+        self.lbl_dash.setStyleSheet("color:#9CA3AF;")
+        card_l.addWidget(self.lbl_dash)
+        card_l.addStretch(1)
+        layout.addWidget(self.card)
+
         layout.addWidget(QLabel("Ajouter des joueurs (1 nom par ligne) :"))
         self.names_edit = QTextEdit()
         self.names_edit.setPlaceholderText("Alice\nBob\nChloé\n...")
@@ -34,6 +46,8 @@ class PlayersTab(QWidget):
 
         btn_row = QHBoxLayout()
         self.btn_add = QPushButton("Enregistrer joueurs")
+        self.btn_add.setProperty("primary", True)
+        self.btn_add.setToolTip("Ajoute les joueurs saisis (1 par ligne)")
         self.btn_add.clicked.connect(self._add_players)
         btn_row.addWidget(self.btn_add)
         btn_row.addStretch(1)
@@ -43,9 +57,13 @@ class PlayersTab(QWidget):
         self.list_widget = QListWidget()
         layout.addWidget(self.list_widget)
 
+        self.refresh()
+
     def refresh(self) -> None:
+        players = self.repo.list_players()
+        self.lbl_dash.setText(f"Joueurs inscrits: {len(players)}")
         self.list_widget.clear()
-        for p in self.repo.list_players():
+        for p in players:
             self.list_widget.addItem(f"{p.id} - {p.name}")
 
     def _add_players(self) -> None:

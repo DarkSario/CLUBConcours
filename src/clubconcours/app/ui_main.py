@@ -7,6 +7,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QMainWindow, QTabWidget, QMessageBox, QStatusBar, QLabel, QProgressBar
 
 from clubconcours.storage import db
+from clubconcours.app.ui_home import HomeTab
 from clubconcours.app.ui_players import PlayersTab
 from clubconcours.app.ui_concours import ConcoursTab
 from clubconcours.app.ui_draw import DrawTab
@@ -16,7 +17,6 @@ from clubconcours.app.ui_export import ExportTab
 
 
 def _icon(name: str) -> QIcon:
-    # assets/icons/<name>.svg (relative to this file)
     p = Path(__file__).resolve().parent / "assets" / "icons" / f"{name}.svg"
     if p.exists():
         return QIcon(str(p))
@@ -47,7 +47,6 @@ class MainWindow(QMainWindow):
         self._sb_mid.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._sb_right.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        # Global progress: scored matches / playable matches (validated OR not)
         self._sb_progress = QProgressBar()
         self._sb_progress.setTextVisible(True)
         self._sb_progress.setMaximumHeight(14)
@@ -63,12 +62,14 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self._sb_right, 1)
 
         # Tabs
+        self.home_tab = HomeTab(self.conn)
         self.players_tab = PlayersTab(self.conn)
         self.concours_tab = ConcoursTab(self.conn)
         self.draw_tab = DrawTab(self.conn)
         self.ranking_tab = RankingTab(self.conn)
         self.export_tab = ExportTab(self.conn)
 
+        self.tabs.addTab(self.home_tab, _icon("home"), "Accueil")
         self.tabs.addTab(self.players_tab, _icon("users"), "Inscription")
         self.tabs.addTab(self.concours_tab, _icon("settings"), "Concours")
         self.tabs.addTab(self.draw_tab, _icon("dice"), "Tirage")
@@ -77,13 +78,19 @@ class MainWindow(QMainWindow):
 
         self.round_tabs: dict[int, RoundTab] = {}
 
-        # Wiring
+        # Home actions wiring
+        self.home_tab.btn_go_current.clicked.connect(self._go_current_round)
+        self.home_tab.btn_draw_next.clicked.connect(self._go_draw_tab)
+        self.home_tab.btn_export_ranking.clicked.connect(self._go_export_ranking)
+
+        # Wiring refresh
         self.players_tab.data_changed.connect(self._refresh_all)
         self.concours_tab.data_changed.connect(self._refresh_all)
         self.draw_tab.data_changed.connect(self._refresh_all)
+        self.ranking_tab.data_changed.connect(self._refresh_all)
+        self.export_tab.data_changed.connect(self._refresh_all)
         self.draw_tab.round_created.connect(self._open_round_tab)
 
-        # Update status bar on tab changes (and after UI settles)
         self.tabs.currentChanged.connect(lambda _: self._refresh_status_bar_debounced())
 
         self._refresh_all()
@@ -96,27 +103,22 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def _refresh_all(self) -> None:
+        self.home_tab.refresh()
         self.players_tab.refresh()
         self.concours_tab.refresh()
         self.draw_tab.refresh()
         self.ranking_tab.refresh()
-        # export_tab has no refresh needs (PDF reads DB on click)
+        # export_tab no refresh needed for content, but keep if you add dashboard later
         self._sync_round_tabs()
         self._refresh_status_bar()
 
     def _refresh_status_bar_debounced(self) -> None:
-        # avoid spamming refresh when switching tabs quickly
         QTimer.singleShot(0, self._refresh_status_bar)
 
     def _refresh_status_bar(self) -> None:
-        players = self.conn.execute("SELECT COUNT(*) AS n FROM players").fetchone()
-        n_players = int(players["n"]) if players else 0
-
-        validated = self.conn.execute("SELECT COUNT(*) AS n FROM matches WHERE validated=1").fetchone()
-        n_validated = int(validated["n"]) if validated else 0
-
-        current_round = self.conn.execute("SELECT COALESCE(MAX(number), 0) AS m FROM rounds").fetchone()
-        cur = int(current_round["m"]) if current_round else 0
+        n_players = int(self.conn.execute("SELECT COUNT(*) AS n FROM players").fetchone()["n"])
+        n_validated = int(self.conn.execute("SELECT COUNT(*) AS n FROM matches WHERE validated=1").fetchone()["n"])
+        cur = int(self.conn.execute("SELECT COALESCE(MAX(number), 0) AS m FROM rounds").fetchone()["m"])
 
         planned_row = self.conn.execute("SELECT value FROM meta WHERE key='num_rounds_planned'").fetchone()
         planned = int(planned_row["value"]) if planned_row and str(planned_row["value"]).isdigit() else None
@@ -124,7 +126,6 @@ class MainWindow(QMainWindow):
         init_row = self.conn.execute("SELECT value FROM meta WHERE key='contest_initialized'").fetchone()
         initialized = init_row is not None and str(init_row["value"]) == "1"
 
-        # Global progress = scored / playable (ignore exempts)
         prog_row = self.conn.execute(
             """
             SELECT
@@ -133,13 +134,12 @@ class MainWindow(QMainWindow):
             FROM matches
             """
         ).fetchone()
-        n_played = int(prog_row["n_played"] or 0) if prog_row else 0
-        n_scored = int(prog_row["n_scored"] or 0) if prog_row else 0
+        n_played = int(prog_row["n_played"] or 0)
+        n_scored = int(prog_row["n_scored"] or 0)
 
         self._sb_left.setText(f"DB: {self.db_path}")
         self._sb_mid.setText(f"Joueurs: {n_players}  |  Matchs validés: {n_validated}")
 
-        # progressbar
         self._sb_progress.setMaximum(max(1, n_played))
         self._sb_progress.setValue(min(n_scored, max(1, n_played)))
         self._sb_progress.setFormat(f"{n_scored}/{n_played}")
@@ -168,8 +168,6 @@ class MainWindow(QMainWindow):
             if rid not in self.round_tabs:
                 tab = RoundTab(self.conn, rid)
                 tab.data_changed.connect(self._refresh_all)
-                # also update status bar if a round tab refreshes itself
-                tab.data_changed.connect(self._refresh_status_bar_debounced)
                 self.round_tabs[rid] = tab
                 self.tabs.addTab(tab, _icon("round"), f"Partie {r['number']}")
 
@@ -191,3 +189,28 @@ class MainWindow(QMainWindow):
                 tab.refresh()
                 self._refresh_status_bar_debounced()
                 break
+
+    # -------- Home actions --------
+
+    def _go_draw_tab(self) -> None:
+        # Tirage tab index fixed by insertion order
+        for i in range(self.tabs.count()):
+            if self.tabs.widget(i) is self.draw_tab:
+                self.tabs.setCurrentIndex(i)
+                self.draw_tab.refresh()
+                break
+
+    def _go_export_ranking(self) -> None:
+        for i in range(self.tabs.count()):
+            if self.tabs.widget(i) is self.export_tab:
+                self.tabs.setCurrentIndex(i)
+                # export tab doesn't need refresh
+                break
+
+    def _go_current_round(self) -> None:
+        # open the last round if exists; otherwise go to draw tab
+        row = self.conn.execute("SELECT id FROM rounds ORDER BY number DESC LIMIT 1").fetchone()
+        if row is None:
+            self._go_draw_tab()
+            return
+        self._open_round_tab(int(row["id"]))
