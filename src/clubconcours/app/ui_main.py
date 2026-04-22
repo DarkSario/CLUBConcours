@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QMainWindow, QTabWidget, QMessageBox, QStatusBar, QLabel
+from PySide6.QtWidgets import QMainWindow, QTabWidget, QMessageBox, QStatusBar, QLabel, QProgressBar
 
 from clubconcours.storage import db
 from clubconcours.app.ui_players import PlayersTab
@@ -46,8 +46,20 @@ class MainWindow(QMainWindow):
         self._sb_left.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._sb_mid.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self._sb_right.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        # Global progress: scored matches / playable matches (validated OR not)
+        self._sb_progress = QProgressBar()
+        self._sb_progress.setTextVisible(True)
+        self._sb_progress.setMaximumHeight(14)
+        self._sb_progress.setFixedWidth(180)
+        self._sb_progress.setStyleSheet(
+            "QProgressBar{border:1px solid #1F2937;border-radius:7px;background:#111827;}"
+            "QProgressBar::chunk{background:#2563EB;border-radius:7px;}"
+        )
+
         sb.addWidget(self._sb_left, 2)
         sb.addWidget(self._sb_mid, 1)
+        sb.addPermanentWidget(self._sb_progress, 0)
         sb.addPermanentWidget(self._sb_right, 1)
 
         # Tabs
@@ -71,6 +83,9 @@ class MainWindow(QMainWindow):
         self.draw_tab.data_changed.connect(self._refresh_all)
         self.draw_tab.round_created.connect(self._open_round_tab)
 
+        # Update status bar on tab changes (and after UI settles)
+        self.tabs.currentChanged.connect(lambda _: self._refresh_status_bar_debounced())
+
         self._refresh_all()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
@@ -85,8 +100,13 @@ class MainWindow(QMainWindow):
         self.concours_tab.refresh()
         self.draw_tab.refresh()
         self.ranking_tab.refresh()
+        # export_tab has no refresh needs (PDF reads DB on click)
         self._sync_round_tabs()
         self._refresh_status_bar()
+
+    def _refresh_status_bar_debounced(self) -> None:
+        # avoid spamming refresh when switching tabs quickly
+        QTimer.singleShot(0, self._refresh_status_bar)
 
     def _refresh_status_bar(self) -> None:
         players = self.conn.execute("SELECT COUNT(*) AS n FROM players").fetchone()
@@ -104,8 +124,37 @@ class MainWindow(QMainWindow):
         init_row = self.conn.execute("SELECT value FROM meta WHERE key='contest_initialized'").fetchone()
         initialized = init_row is not None and str(init_row["value"]) == "1"
 
+        # Global progress = scored / playable (ignore exempts)
+        prog_row = self.conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN team2_id IS NOT NULL THEN 1 ELSE 0 END) AS n_played,
+              SUM(CASE WHEN team2_id IS NOT NULL AND score1 IS NOT NULL AND score2 IS NOT NULL THEN 1 ELSE 0 END) AS n_scored
+            FROM matches
+            """
+        ).fetchone()
+        n_played = int(prog_row["n_played"] or 0) if prog_row else 0
+        n_scored = int(prog_row["n_scored"] or 0) if prog_row else 0
+
         self._sb_left.setText(f"DB: {self.db_path}")
         self._sb_mid.setText(f"Joueurs: {n_players}  |  Matchs validés: {n_validated}")
+
+        # progressbar
+        self._sb_progress.setMaximum(max(1, n_played))
+        self._sb_progress.setValue(min(n_scored, max(1, n_played)))
+        self._sb_progress.setFormat(f"{n_scored}/{n_played}")
+
+        if n_played > 0 and n_scored == n_played:
+            chunk = "#22C55E"
+        elif n_played > 0 and n_scored == 0:
+            chunk = "#D97706"
+        else:
+            chunk = "#2563EB"
+        self._sb_progress.setStyleSheet(
+            "QProgressBar{border:1px solid #1F2937;border-radius:7px;background:#111827;}"
+            f"QProgressBar::chunk{{background:{chunk};border-radius:7px;}}"
+        )
+
         if planned is None:
             self._sb_right.setText(f"Concours: {'OK' if initialized else 'NON'}  |  Partie: {cur}")
         else:
@@ -119,6 +168,8 @@ class MainWindow(QMainWindow):
             if rid not in self.round_tabs:
                 tab = RoundTab(self.conn, rid)
                 tab.data_changed.connect(self._refresh_all)
+                # also update status bar if a round tab refreshes itself
+                tab.data_changed.connect(self._refresh_status_bar_debounced)
                 self.round_tabs[rid] = tab
                 self.tabs.addTab(tab, _icon("round"), f"Partie {r['number']}")
 
@@ -138,4 +189,5 @@ class MainWindow(QMainWindow):
             if self.tabs.widget(i) is tab:
                 self.tabs.setCurrentIndex(i)
                 tab.refresh()
+                self._refresh_status_bar_debounced()
                 break

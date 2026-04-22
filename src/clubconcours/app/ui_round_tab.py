@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import html
 import sqlite3
+from dataclasses import dataclass
 
 from PySide6.QtCore import Signal, Qt, QRectF
-from PySide6.QtGui import QColor, QKeySequence, QTextDocument, QBrush
+from PySide6.QtGui import QColor, QKeySequence, QTextDocument, QBrush, QShortcut
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QStyle,
     QHeaderView,
     QFrame,
+    QProgressBar,
 )
 
 from clubconcours.storage.repositories import RoundRepo
@@ -71,6 +73,12 @@ class ScoresPasteTableWidget(QTableWidget):
         super().keyPressEvent(event)
 
 
+@dataclass(frozen=True)
+class PlayerStats:
+    wins: int
+    ga: int  # goal average = plus - minus
+
+
 class RoundTab(QWidget):
     data_changed = Signal()
 
@@ -95,10 +103,21 @@ class RoundTab(QWidget):
         self.card.setFrameShape(QFrame.StyledPanel)
         self.card.setStyleSheet("QFrame { background:#0B1220; border:1px solid #1F2937; border-radius:10px; }")
         card_l = QHBoxLayout(self.card)
+
         self.lbl_dash = QLabel("")
         self.lbl_dash.setStyleSheet("color:#9CA3AF;")
-        card_l.addWidget(self.lbl_dash)
-        card_l.addStretch(1)
+        card_l.addWidget(self.lbl_dash, 1)
+
+        self.progress = QProgressBar()
+        self.progress.setTextVisible(True)
+        self.progress.setMaximumHeight(14)
+        self.progress.setStyleSheet(
+            "QProgressBar{border:1px solid #1F2937;border-radius:7px;background:#111827;}"
+            "QProgressBar::chunk{background:#2563EB;border-radius:7px;}"
+        )
+        self.progress.setFixedWidth(260)
+        card_l.addWidget(self.progress, 0, Qt.AlignRight)
+
         layout.addWidget(self.card)
 
         header = QHBoxLayout()
@@ -134,7 +153,6 @@ class RoundTab(QWidget):
         )
         self.table.setAlternatingRowColors(True)
         self.table.setSortingEnabled(False)
-
         self.table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.table.setSelectionBehavior(QTableWidget.SelectItems)
 
@@ -145,6 +163,14 @@ class RoundTab(QWidget):
         self._setup_column_sizing()
         self.table.verticalHeader().setDefaultSectionSize(32)
         self.table.verticalHeader().setVisible(False)
+
+        # Quick input navigation
+        self.table.itemChanged.connect(self._on_item_changed)
+
+        # Shortcuts
+        QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_scores)
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self.validate_round)
+        QShortcut(QKeySequence("Ctrl+Enter"), self, activated=self.validate_round)
 
         layout.addWidget(self.table)
 
@@ -180,44 +206,76 @@ class RoundTab(QWidget):
             return False
         return int(r["scores_locked"]) == 1 or int(r["validated"]) == 1
 
-    def _wins_by_player_name(self) -> dict[str, int]:
+    # ---------- stats used for colors + tooltips ----------
+
+    def _player_stats_by_name(self) -> dict[str, PlayerStats]:
+        """
+        Compute per-player stats based on validated matches:
+        - wins
+        - ga (plus - minus)
+        """
         players = self.conn.execute("SELECT id, name FROM players").fetchall()
         id_to_name = {int(p["id"]): str(p["name"]) for p in players}
 
-        team_players = self.conn.execute("SELECT round_team_id, player_id FROM round_team_players").fetchall()
+        team_players = self.conn.execute(
+            "SELECT round_team_id, player_id FROM round_team_players"
+        ).fetchall()
         team_to_players: dict[int, list[int]] = {}
         for r in team_players:
             team_to_players.setdefault(int(r["round_team_id"]), []).append(int(r["player_id"]))
 
         wins_by_name: dict[str, int] = {name: 0 for name in id_to_name.values()}
+        plus_by_name: dict[str, int] = {name: 0 for name in id_to_name.values()}
+        minus_by_name: dict[str, int] = {name: 0 for name in id_to_name.values()}
 
         matches = self.conn.execute(
-            "SELECT team1_id, team2_id, score1, score2 FROM matches WHERE validated=1"
+            "SELECT team1_id, team2_id, score1, score2 FROM matches WHERE validated=1 AND team2_id IS NOT NULL"
         ).fetchall()
 
         for m in matches:
             t1 = int(m["team1_id"])
-            t2 = m["team2_id"]
+            t2 = int(m["team2_id"])
             s1 = m["score1"]
             s2 = m["score2"]
             if s1 is None or s2 is None:
                 continue
+            s1i = int(s1)
+            s2i = int(s2)
 
             p1 = team_to_players.get(t1, [])
-            p2 = team_to_players.get(int(t2), []) if t2 is not None else []
+            p2 = team_to_players.get(t2, [])
 
-            if int(s1) > int(s2):
+            for pid in p1:
+                n = id_to_name.get(pid)
+                if n is None:
+                    continue
+                plus_by_name[n] = plus_by_name.get(n, 0) + s1i
+                minus_by_name[n] = minus_by_name.get(n, 0) + s2i
+
+            for pid in p2:
+                n = id_to_name.get(pid)
+                if n is None:
+                    continue
+                plus_by_name[n] = plus_by_name.get(n, 0) + s2i
+                minus_by_name[n] = minus_by_name.get(n, 0) + s1i
+
+            if s1i > s2i:
                 for pid in p1:
                     n = id_to_name.get(pid)
                     if n is not None:
                         wins_by_name[n] = wins_by_name.get(n, 0) + 1
-            elif int(s2) > int(s1):
+            elif s2i > s1i:
                 for pid in p2:
                     n = id_to_name.get(pid)
                     if n is not None:
                         wins_by_name[n] = wins_by_name.get(n, 0) + 1
 
-        return wins_by_name
+        out: dict[str, PlayerStats] = {}
+        for name in wins_by_name.keys():
+            w = int(wins_by_name.get(name, 0))
+            ga = int(plus_by_name.get(name, 0) - minus_by_name.get(name, 0))
+            out[name] = PlayerStats(wins=w, ga=ga)
+        return out
 
     def _team_names(self, team_id: int) -> list[str]:
         rows = self.conn.execute(
@@ -232,41 +290,70 @@ class RoundTab(QWidget):
         ).fetchall()
         return [str(r["name"]) for r in rows]
 
-    def _team_label_html(self, team_id: int, wins_by_name: dict[str, int]) -> str:
+    def _team_label_html(self, team_id: int, stats_by_name: dict[str, PlayerStats]) -> str:
         names = self._team_names(team_id)
         parts: list[str] = []
         for n in names:
-            w = int(wins_by_name.get(n, 0))
+            w = int(stats_by_name.get(n, PlayerStats(0, 0)).wins)
             c = wins_to_color(w).name()
             parts.append(f'<span style="color:{c}; font-weight:700;">{html.escape(n)}</span>')
         return " / ".join(parts)
 
+    def _team_tooltip(self, team_id: int, stats_by_name: dict[str, PlayerStats]) -> str:
+        names = self._team_names(team_id)
+        lines: list[str] = []
+        for n in names:
+            st = stats_by_name.get(n, PlayerStats(0, 0))
+            ga = f"{st.ga:+d}"
+            lines.append(f"{n} — W:{st.wins} GA:{ga}")
+        return "\n".join(lines)
+
+    # ---------- dashboard + progress ----------
+
     def _refresh_dashboard(self, round_number: int, locked: bool) -> None:
-        n_matches = int(
-            self.conn.execute("SELECT COUNT(*) AS n FROM matches WHERE round_id=?", (self.round_id,)).fetchone()["n"]
-        )
-        n_valid = int(
-            self.conn.execute(
-                "SELECT COUNT(*) AS n FROM matches WHERE round_id=? AND validated=1",
-                (self.round_id,),
-            ).fetchone()["n"]
-        )
-        missing = int(
-            self.conn.execute(
-                """
-                SELECT COUNT(*) AS n
-                FROM matches
-                WHERE round_id=?
-                  AND team2_id IS NOT NULL
-                  AND (score1 IS NULL OR score2 IS NULL)
-                """,
-                (self.round_id,),
-            ).fetchone()["n"]
-        )
+        row = self.conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN team2_id IS NULL THEN 1 ELSE 0 END) AS n_exempt,
+              SUM(CASE WHEN team2_id IS NOT NULL THEN 1 ELSE 0 END) AS n_played,
+              SUM(CASE WHEN team2_id IS NOT NULL AND score1 IS NOT NULL AND score2 IS NOT NULL THEN 1 ELSE 0 END) AS n_scored,
+              SUM(CASE WHEN validated=1 THEN 1 ELSE 0 END) AS n_valid
+            FROM matches
+            WHERE round_id=?
+            """,
+            (self.round_id,),
+        ).fetchone()
+
+        n_exempt = int(row["n_exempt"] or 0)
+        n_played = int(row["n_played"] or 0)
+        n_scored = int(row["n_scored"] or 0)
+        n_valid = int(row["n_valid"] or 0)
+        missing = max(0, n_played - n_scored)
+
         self.lbl_dash.setText(
-            f"Partie {round_number}  |  Matchs: {n_matches}  |  Validés: {n_valid}  |  Scores manquants: {missing}  |  "
+            f"Partie {round_number}  |  Matchs: {n_played + n_exempt} (exempt: {n_exempt})"
+            f"  |  Scores saisis: {n_scored}/{n_played}  |  Validés: {n_valid}  |  "
             f"{'VERROUILLÉ' if locked else 'OUVERT'}"
         )
+
+        # Progress bar = scored / played (ignore exempt)
+        self.progress.setMaximum(max(1, n_played))
+        self.progress.setValue(min(n_scored, max(1, n_played)))
+        self.progress.setFormat(f"{n_scored}/{n_played}")
+
+        # color chunk depending on missing
+        if missing == 0 and n_played > 0:
+            chunk = "#22C55E"
+        elif n_scored == 0 and n_played > 0:
+            chunk = "#D97706"
+        else:
+            chunk = "#2563EB"
+        self.progress.setStyleSheet(
+            "QProgressBar{border:1px solid #1F2937;border-radius:7px;background:#111827;}"
+            f"QProgressBar::chunk{{background:{chunk};border-radius:7px;}}"
+        )
+
+    # ---------- refresh ----------
 
     def refresh(self) -> None:
         r = self.conn.execute("SELECT * FROM rounds WHERE id=?", (self.round_id,)).fetchone()
@@ -278,9 +365,7 @@ class RoundTab(QWidget):
         round_number = int(r["number"])
         self.lbl_title.setText(f"Partie {round_number}  |  {r['format']}  |  {r['draw_mode']}")
 
-        self._refresh_dashboard(round_number, locked)
-
-        wins_by_name = self._wins_by_player_name()
+        stats_by_name = self._player_stats_by_name()
 
         matches = self.conn.execute(
             """
@@ -294,89 +379,128 @@ class RoundTab(QWidget):
             (self.round_id,),
         ).fetchall()
 
-        self.table.setRowCount(0)
+        # avoid itemChanged recursion during full refresh
+        self.table.blockSignals(True)
+        try:
+            self.table.setRowCount(0)
 
-        col_ok = QColor("#22C55E")
-        col_muted = QColor("#9CA3AF")
-        col_exempt = QColor("#6B7280")
-        bg_missing = QBrush(QColor("#3B2A0A"))  # dark amber
-        bg_none = QBrush(Qt.transparent)
+            col_ok = QColor("#22C55E")
+            col_muted = QColor("#9CA3AF")
+            col_exempt = QColor("#6B7280")
+            bg_missing = QBrush(QColor("#3B2A0A"))  # dark amber
+            bg_none = QBrush(Qt.transparent)
 
-        for m in matches:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
+            for m in matches:
+                row = self.table.rowCount()
+                self.table.insertRow(row)
 
-            match_id = int(m["id"])
-            team1_id = int(m["team1_id"])
-            team2_id = m["team2_id"]  # can be None
-            is_exempt = team2_id is None
+                match_id = int(m["id"])
+                team1_id = int(m["team1_id"])
+                team2_id = m["team2_id"]  # can be None
+                is_exempt = team2_id is None
 
-            it_id = QTableWidgetItem(str(match_id))
-            it_id.setFlags(it_id.flags() & ~Qt.ItemIsEditable)
-            it_id.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row, self.COL_MATCH_ID, it_id)
+                it_id = QTableWidgetItem(str(match_id))
+                it_id.setFlags(it_id.flags() & ~Qt.ItemIsEditable)
+                it_id.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row, self.COL_MATCH_ID, it_id)
 
-            court = m["court_number"]
-            it_court = QTableWidgetItem("" if court is None else str(int(court)))
-            it_court.setTextAlignment(Qt.AlignCenter)
-            it_court.setFlags(it_court.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, self.COL_TERRAIN, it_court)
+                court = m["court_number"]
+                it_court = QTableWidgetItem("" if court is None else str(int(court)))
+                it_court.setTextAlignment(Qt.AlignCenter)
+                it_court.setFlags(it_court.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(row, self.COL_TERRAIN, it_court)
 
-            it_t1 = QTableWidgetItem(self._team_label_html(team1_id, wins_by_name))
-            it_t1.setFlags(it_t1.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, self.COL_TEAM1, it_t1)
+                it_t1 = QTableWidgetItem(self._team_label_html(team1_id, stats_by_name))
+                it_t1.setFlags(it_t1.flags() & ~Qt.ItemIsEditable)
+                it_t1.setToolTip(self._team_tooltip(team1_id, stats_by_name))
+                self.table.setItem(row, self.COL_TEAM1, it_t1)
 
-            if is_exempt:
-                t2_html = '<span style="font-weight:700; color:#9CA3AF;">EXEMPT</span>'
-            else:
-                t2_html = self._team_label_html(int(team2_id), wins_by_name)
-            it_t2 = QTableWidgetItem(t2_html)
-            it_t2.setFlags(it_t2.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, self.COL_TEAM2, it_t2)
+                if is_exempt:
+                    t2_html = '<span style="font-weight:700; color:#9CA3AF;">EXEMPT</span>'
+                    tt2 = "EXEMPT"
+                else:
+                    t2_html = self._team_label_html(int(team2_id), stats_by_name)
+                    tt2 = self._team_tooltip(int(team2_id), stats_by_name)
+                it_t2 = QTableWidgetItem(t2_html)
+                it_t2.setFlags(it_t2.flags() & ~Qt.ItemIsEditable)
+                it_t2.setToolTip(tt2)
+                self.table.setItem(row, self.COL_TEAM2, it_t2)
 
-            s1 = m["score1"]
-            s2 = m["score2"]
-            it_s1 = QTableWidgetItem("" if s1 is None else str(int(s1)))
-            it_s2 = QTableWidgetItem("" if s2 is None else str(int(s2)))
-            it_s1.setTextAlignment(Qt.AlignCenter)
-            it_s2.setTextAlignment(Qt.AlignCenter)
+                s1 = m["score1"]
+                s2 = m["score2"]
+                it_s1 = QTableWidgetItem("" if s1 is None else str(int(s1)))
+                it_s2 = QTableWidgetItem("" if s2 is None else str(int(s2)))
+                it_s1.setTextAlignment(Qt.AlignCenter)
+                it_s2.setTextAlignment(Qt.AlignCenter)
 
-            if locked or is_exempt:
-                it_s1.setFlags(it_s1.flags() & ~Qt.ItemIsEditable)
-                it_s2.setFlags(it_s2.flags() & ~Qt.ItemIsEditable)
+                if locked or is_exempt:
+                    it_s1.setFlags(it_s1.flags() & ~Qt.ItemIsEditable)
+                    it_s2.setFlags(it_s2.flags() & ~Qt.ItemIsEditable)
 
-            self.table.setItem(row, self.COL_SCORE1, it_s1)
-            self.table.setItem(row, self.COL_SCORE2, it_s2)
+                self.table.setItem(row, self.COL_SCORE1, it_s1)
+                self.table.setItem(row, self.COL_SCORE2, it_s2)
 
-            validated = int(m["validated"]) == 1
+                validated = int(m["validated"]) == 1
 
-            if is_exempt:
-                it_status = QTableWidgetItem("EXEMPT")
-                it_status.setForeground(col_exempt)
-            else:
-                it_status = QTableWidgetItem("VALIDÉ" if validated else "NON VALIDÉ")
-                it_status.setForeground(col_ok if validated else col_muted)
+                if is_exempt:
+                    it_status = QTableWidgetItem("EXEMPT")
+                    it_status.setForeground(col_exempt)
+                else:
+                    it_status = QTableWidgetItem("VALIDÉ" if validated else "NON VALIDÉ")
+                    it_status.setForeground(col_ok if validated else col_muted)
 
-            it_status.setFlags(it_status.flags() & ~Qt.ItemIsEditable)
-            it_status.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row, self.COL_STATUS, it_status)
+                it_status.setFlags(it_status.flags() & ~Qt.ItemIsEditable)
+                it_status.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row, self.COL_STATUS, it_status)
 
-            missing = (not is_exempt) and ((s1 is None) or (s2 is None))
-            it_s1.setBackground(bg_missing if (missing and s1 is None) else bg_none)
-            it_s2.setBackground(bg_missing if (missing and s2 is None) else bg_none)
+                missing = (not is_exempt) and ((s1 is None) or (s2 is None))
+                it_s1.setBackground(bg_missing if (missing and s1 is None) else bg_none)
+                it_s2.setBackground(bg_missing if (missing and s2 is None) else bg_none)
 
-            if is_exempt:
-                for c in range(self.table.columnCount()):
-                    it = self.table.item(row, c)
-                    if it is not None and c not in (self.COL_TEAM1, self.COL_TEAM2):
-                        it.setForeground(col_exempt)
+                if is_exempt:
+                    for c in range(self.table.columnCount()):
+                        it = self.table.item(row, c)
+                        if it is not None and c not in (self.COL_TEAM1, self.COL_TEAM2):
+                            it.setForeground(col_exempt)
+        finally:
+            self.table.blockSignals(False)
 
         self._setup_column_sizing()
+        self._refresh_dashboard(round_number, locked)
 
         self.btn_save.setEnabled(not locked)
         self.btn_validate.setEnabled(not locked)
         self.btn_assign.setEnabled(not locked)
         self.btn_unlock.setEnabled(locked)
+
+    # ---------- quick input behavior ----------
+
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        # only handle score cells
+        if item.column() not in (self.COL_SCORE1, self.COL_SCORE2):
+            return
+
+        # ignore empty / non-int
+        txt = (item.text() or "").strip()
+        if txt == "":
+            return
+        try:
+            int(txt)
+        except Exception:
+            return
+
+        r = item.row()
+        c = item.column()
+
+        # move focus:
+        if c == self.COL_SCORE1:
+            self.table.setCurrentCell(r, self.COL_SCORE2)
+        else:
+            # Score B -> next row Score A
+            if r + 1 < self.table.rowCount():
+                self.table.setCurrentCell(r + 1, self.COL_SCORE1)
+
+    # ---------- Excel paste ----------
 
     def paste_scores_from_clipboard(self) -> None:
         if self._is_locked():
@@ -422,7 +546,7 @@ class RoundTab(QWidget):
             match_id = int(mid_item.text())
             if team2_by_match.get(match_id) is None:
                 dst_row += 1
-                continue
+                continue  # exempt, don't consume source row
 
             src_cols = matrix[src_r]
             for src_c, raw in enumerate(src_cols):
@@ -447,7 +571,14 @@ class RoundTab(QWidget):
                     it = QTableWidgetItem("")
                     it.setTextAlignment(Qt.AlignCenter)
                     self.table.setItem(dst_row, dst_col, it)
-                it.setText(str(n))
+
+                # avoid triggering navigation on paste
+                self.table.blockSignals(True)
+                try:
+                    it.setText(str(n))
+                finally:
+                    self.table.blockSignals(False)
+
                 applied += 1
 
             src_r += 1
@@ -462,6 +593,53 @@ class RoundTab(QWidget):
 
         if applied > 0:
             self.table.setFocus()
+            self.refresh()  # refresh highlights/progress
+
+    # ---------- save / validate ----------
+
+    def _incomplete_match_ids(self) -> list[int]:
+        rows = self.conn.execute(
+            """
+            SELECT id
+            FROM matches
+            WHERE round_id=?
+              AND team2_id IS NOT NULL
+              AND (score1 IS NULL OR score2 IS NULL)
+            ORDER BY id
+            """,
+            (self.round_id,),
+        ).fetchall()
+        return [int(r["id"]) for r in rows]
+
+    def _matches_with_draw_score(self) -> list[int]:
+        rows = self.conn.execute(
+            """
+            SELECT id
+            FROM matches
+            WHERE round_id=?
+              AND team2_id IS NOT NULL
+              AND score1 IS NOT NULL AND score2 IS NOT NULL
+              AND score1 = score2
+            ORDER BY id
+            """,
+            (self.round_id,),
+        ).fetchall()
+        return [int(r["id"]) for r in rows]
+
+    def _missing_court_match_ids(self) -> list[int]:
+        rows = self.conn.execute(
+            """
+            SELECT m.id
+            FROM matches m
+            LEFT JOIN court_assignments ca ON ca.match_id = m.id
+            WHERE m.round_id=?
+              AND m.team2_id IS NOT NULL
+              AND ca.court_number IS NULL
+            ORDER BY m.id
+            """,
+            (self.round_id,),
+        ).fetchall()
+        return [int(r["id"]) for r in rows]
 
     def save_scores(self) -> None:
         if self._is_locked():
@@ -480,7 +658,7 @@ class RoundTab(QWidget):
             for row in range(self.table.rowCount()):
                 match_id = int(self.table.item(row, self.COL_MATCH_ID).text())
                 if team2_by_match.get(match_id) is None:
-                    continue
+                    continue  # exempt
 
                 s1_txt = (self.table.item(row, self.COL_SCORE1).text() or "").strip()
                 s2_txt = (self.table.item(row, self.COL_SCORE2).text() or "").strip()
@@ -514,7 +692,51 @@ class RoundTab(QWidget):
             QMessageBox.information(self, "Validation", "Partie déjà verrouillée.")
             return
 
+        # Always save UI edits first
         self.save_scores()
+
+        # Intelligent checks
+        incomplete = self._incomplete_match_ids()
+        if incomplete:
+            txt = ", ".join(str(x) for x in incomplete[:15])
+            more = "" if len(incomplete) <= 15 else f" (+{len(incomplete)-15})"
+            ok = QMessageBox.question(
+                self,
+                "Validation",
+                f"Il manque des scores pour {len(incomplete)} match(s) : {txt}{more}\n\nValider quand même ?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if ok != QMessageBox.Yes:
+                return
+
+        missing_courts = self._missing_court_match_ids()
+        if missing_courts:
+            txt = ", ".join(str(x) for x in missing_courts[:15])
+            more = "" if len(missing_courts) <= 15 else f" (+{len(missing_courts)-15})"
+            ok = QMessageBox.question(
+                self,
+                "Validation",
+                f"Terrains manquants pour {len(missing_courts)} match(s) : {txt}{more}\n\n"
+                "Assigner automatiquement les terrains avant validation ?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if ok == QMessageBox.Yes:
+                self.assign_courts()
+            else:
+                # allow validate without courts (if you want to block, return here)
+                pass
+
+        draws = self._matches_with_draw_score()
+        if draws:
+            txt = ", ".join(str(x) for x in draws[:15])
+            more = "" if len(draws) <= 15 else f" (+{len(draws)-15})"
+            QMessageBox.warning(
+                self,
+                "Validation",
+                f"Attention : égalité détectée sur {len(draws)} match(s) : {txt}{more}\n"
+                "Si ce n'est pas voulu, corrige les scores avant validation.",
+            )
+
         try:
             self.rr.validate_round(self.round_id)
         except Exception as e:
