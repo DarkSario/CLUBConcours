@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QTableWidget,
     QTableWidgetItem,
+    QFrame,
 )
 
 from reportlab.lib import colors
@@ -26,6 +28,18 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from clubconcours.core.ranking import compute_player_ranking
 
 
+def wins_to_color(wins: int) -> QColor:
+    if wins <= 0:
+        return QColor("#6B7280")
+    if wins == 1:
+        return QColor("#2563EB")
+    if wins == 2:
+        return QColor("#16A34A")
+    if wins == 3:
+        return QColor("#D97706")
+    return QColor("#DC2626")
+
+
 class RankingTab(QWidget):
     data_changed = Signal()
 
@@ -34,6 +48,17 @@ class RankingTab(QWidget):
         self.conn = conn
 
         layout = QVBoxLayout(self)
+
+        # Dashboard (summary)
+        self.card = QFrame()
+        self.card.setFrameShape(QFrame.StyledPanel)
+        self.card.setStyleSheet("QFrame { background:#0B1220; border:1px solid #1F2937; border-radius:10px; }")
+        card_l = QHBoxLayout(self.card)
+        self.lbl_dash = QLabel("")
+        self.lbl_dash.setStyleSheet("color:#9CA3AF;")
+        card_l.addWidget(self.lbl_dash)
+        card_l.addStretch(1)
+        layout.addWidget(self.card)
 
         top = QHBoxLayout()
         self.title = QLabel("Classement Général")
@@ -54,6 +79,7 @@ class RankingTab(QWidget):
         )
         self.table.setAlternatingRowColors(True)
         self.table.setSortingEnabled(False)
+        self.table.verticalHeader().setVisible(False)
         layout.addWidget(self.table)
 
         self.refresh()
@@ -62,24 +88,56 @@ class RankingTab(QWidget):
         row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return None if row is None else str(row["value"])
 
+    def _refresh_dashboard(self) -> None:
+        try:
+            n_players = int(self.conn.execute("SELECT COUNT(*) AS n FROM players").fetchone()["n"])
+        except Exception:
+            n_players = 0
+
+        try:
+            n_validated = int(self.conn.execute("SELECT COUNT(*) AS n FROM matches WHERE validated=1").fetchone()["n"])
+        except Exception:
+            n_validated = 0
+
+        planned = self._meta_get("num_rounds_planned") or "?"
+        self.lbl_dash.setText(
+            f"Joueurs: {n_players}  |  Matchs validés: {n_validated}  |  Classement basé sur matchs validés  |  Parties prévues: {planned}"
+        )
+
     def refresh(self) -> None:
+        self._refresh_dashboard()
+
         ranking = compute_player_ranking(self.conn)
+
+        bold = QFont()
+        bold.setBold(True)
 
         self.table.setRowCount(len(ranking))
         for i, s in enumerate(ranking, start=1):
-            items = [
-                QTableWidgetItem(str(i)),
-                QTableWidgetItem(str(s.name)),
-                QTableWidgetItem(str(s.wins)),
-                QTableWidgetItem(str(s.plus)),
-                QTableWidgetItem(str(s.minus)),
-                QTableWidgetItem(str(s.ga)),
-            ]
-            for j, it in enumerate(items):
+            it_rank = QTableWidgetItem(str(i))
+            it_rank.setFlags(it_rank.flags() & ~Qt.ItemIsEditable)
+            it_rank.setTextAlignment(Qt.AlignCenter)
+
+            it_name = QTableWidgetItem(str(s.name))
+            it_name.setFlags(it_name.flags() & ~Qt.ItemIsEditable)
+            it_name.setFont(bold)
+            it_name.setForeground(wins_to_color(int(s.wins)))
+
+            it_wins = QTableWidgetItem(str(s.wins))
+            it_plus = QTableWidgetItem(str(s.plus))
+            it_minus = QTableWidgetItem(str(s.minus))
+            it_ga = QTableWidgetItem(str(s.ga))
+
+            for it in [it_wins, it_plus, it_minus, it_ga]:
                 it.setFlags(it.flags() & ~Qt.ItemIsEditable)
-                if j != 1:
-                    it.setTextAlignment(Qt.AlignCenter)
-                self.table.setItem(i - 1, j, it)
+                it.setTextAlignment(Qt.AlignCenter)
+
+            self.table.setItem(i - 1, 0, it_rank)
+            self.table.setItem(i - 1, 1, it_name)
+            self.table.setItem(i - 1, 2, it_wins)
+            self.table.setItem(i - 1, 3, it_plus)
+            self.table.setItem(i - 1, 4, it_minus)
+            self.table.setItem(i - 1, 5, it_ga)
 
         self.table.resizeColumnsToContents()
 
@@ -170,11 +228,5 @@ class RankingTab(QWidget):
         story.append(t)
         story.append(Spacer(1, 6 * mm))
 
-        story.append(
-            Paragraph(
-                f"Généré le {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                styles["BodyText"],
-            )
-        )
-
+        story.append(Paragraph(f"Généré le {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles["BodyText"]))
         doc.build(story)

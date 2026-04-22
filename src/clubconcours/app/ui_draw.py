@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QPlainTextEdit,
     QMessageBox,
+    QFrame,
 )
 
 from clubconcours.core.draw import RoundConfig, draw_round
@@ -44,6 +45,17 @@ class DrawTab(QWidget):
 
         layout = QVBoxLayout(self)
 
+        # Dashboard card (summary)
+        self.card = QFrame()
+        self.card.setFrameShape(QFrame.StyledPanel)
+        self.card.setStyleSheet("QFrame { background:#0B1220; border:1px solid #1F2937; border-radius:10px; }")
+        card_l = QHBoxLayout(self.card)
+        self.lbl_dash = QLabel("")
+        self.lbl_dash.setStyleSheet("color:#9CA3AF;")
+        card_l.addWidget(self.lbl_dash)
+        card_l.addStretch(1)
+        layout.addWidget(self.card)
+
         row = QHBoxLayout()
         row.addWidget(QLabel("Format:"))
         self.format_combo = QComboBox()
@@ -61,6 +73,7 @@ class DrawTab(QWidget):
         row.addWidget(self.btn_modify)
 
         self.btn_draw = QPushButton("Tirer la partie")
+        self.btn_draw.setProperty("primary", True)
         self.btn_draw.clicked.connect(self._draw)
         row.addWidget(self.btn_draw)
 
@@ -68,13 +81,14 @@ class DrawTab(QWidget):
         layout.addLayout(row)
 
         self.mode_help = QLabel("")
-        self.mode_help.setStyleSheet("color: #666;")
+        self.mode_help.setStyleSheet("color: #9CA3AF;")
         layout.addWidget(self.mode_help)
         self.mode_combo.currentIndexChanged.connect(self._update_mode_help)
         self._update_mode_help()
 
         # Info line: shows what plan is being applied for next round
         self.plan_info = QLabel("")
+        self.plan_info.setStyleSheet("color: #9CA3AF;")
         layout.addWidget(self.plan_info)
 
         self.output = QPlainTextEdit()
@@ -101,11 +115,12 @@ class DrawTab(QWidget):
 
     def _update_mode_help(self) -> None:
         code = self._mode_code()
-        self.mode_help.setText(DRAW_MODE_HELP.get(code, ""))
+        self.mode_help.setText("Explication : " + DRAW_MODE_HELP.get(code, ""))
 
     def refresh(self) -> None:
         # If user did not unlock "Modifier", keep UI in sync with concours plan
         self._apply_edit_state()
+        self._refresh_dashboard()
         if not self._edit_enabled:
             self._apply_plan_to_combos_for_next_round()
 
@@ -177,6 +192,30 @@ class DrawTab(QWidget):
 
         self._update_mode_help()
 
+    def _refresh_dashboard(self) -> None:
+        try:
+            n_players = int(self.conn.execute("SELECT COUNT(*) AS n FROM players").fetchone()["n"])
+        except Exception:
+            n_players = 0
+
+        try:
+            n_rounds = int(self.conn.execute("SELECT COUNT(*) AS n FROM rounds").fetchone()["n"])
+        except Exception:
+            n_rounds = 0
+
+        try:
+            n_validated = int(self.conn.execute("SELECT COUNT(*) AS n FROM matches WHERE validated=1").fetchone()["n"])
+        except Exception:
+            n_validated = 0
+
+        nxt = self._next_round_number()
+        planned = self._num_rounds_planned()
+        plan_txt = "?" if planned is None else str(planned)
+
+        self.lbl_dash.setText(
+            f"Joueurs: {n_players}  |  Parties: {n_rounds}/{plan_txt}  |  Matchs validés: {n_validated}  |  Prochaine: {nxt}"
+        )
+
     def _draw(self) -> None:
         if not self._contest_initialized():
             QMessageBox.warning(self, "Tirage", "Concours non initialisé (au démarrage).")
@@ -228,7 +267,8 @@ class DrawTab(QWidget):
         self.data_changed.emit()
         self.round_created.emit(round_id)
 
-        # update info for next round
+        # update dashboard + info for next round
+        self._refresh_dashboard()
         self._apply_plan_to_combos_for_next_round()
 
     def _format_round(self, round_id: int) -> str:

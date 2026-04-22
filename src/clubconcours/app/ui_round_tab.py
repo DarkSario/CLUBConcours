@@ -4,7 +4,7 @@ import html
 import sqlite3
 
 from PySide6.QtCore import Signal, Qt, QRectF
-from PySide6.QtGui import QColor, QKeySequence, QTextDocument
+from PySide6.QtGui import QColor, QKeySequence, QTextDocument, QBrush
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate,
     QStyle,
     QHeaderView,
+    QFrame,
 )
 
 from clubconcours.storage.repositories import RoundRepo
@@ -25,19 +26,17 @@ from clubconcours.storage.repositories import RoundRepo
 
 def wins_to_color(wins: int) -> QColor:
     if wins <= 0:
-        return QColor("#6B7280")  # gray
+        return QColor("#6B7280")
     if wins == 1:
-        return QColor("#2563EB")  # blue
+        return QColor("#2563EB")
     if wins == 2:
-        return QColor("#16A34A")  # green
+        return QColor("#16A34A")
     if wins == 3:
-        return QColor("#D97706")  # orange
-    return QColor("#DC2626")  # red
+        return QColor("#D97706")
+    return QColor("#DC2626")
 
 
 class HtmlDelegate(QStyledItemDelegate):
-    """Render DisplayRole as HTML (used for team columns)."""
-
     def paint(self, painter, option, index):  # type: ignore[override]
         text = index.data(Qt.DisplayRole)
         if isinstance(text, str) and ("</" in text or "<span" in text or "<b>" in text):
@@ -61,8 +60,6 @@ class HtmlDelegate(QStyledItemDelegate):
 
 
 class ScoresPasteTableWidget(QTableWidget):
-    """QTableWidget that intercepts Ctrl+V to paste Excel grids into scores."""
-
     def __init__(self, parent: "RoundTab") -> None:
         super().__init__(0, 7, parent)
         self._round_tab = parent
@@ -93,8 +90,20 @@ class RoundTab(QWidget):
 
         layout = QVBoxLayout(self)
 
+        # Dashboard
+        self.card = QFrame()
+        self.card.setFrameShape(QFrame.StyledPanel)
+        self.card.setStyleSheet("QFrame { background:#0B1220; border:1px solid #1F2937; border-radius:10px; }")
+        card_l = QHBoxLayout(self.card)
+        self.lbl_dash = QLabel("")
+        self.lbl_dash.setStyleSheet("color:#9CA3AF;")
+        card_l.addWidget(self.lbl_dash)
+        card_l.addStretch(1)
+        layout.addWidget(self.card)
+
         header = QHBoxLayout()
         self.lbl_title = QLabel("")
+        self.lbl_title.setStyleSheet("font-weight:700; font-size: 12pt;")
         header.addWidget(self.lbl_title)
         header.addStretch(1)
 
@@ -103,14 +112,17 @@ class RoundTab(QWidget):
         header.addWidget(self.btn_assign)
 
         self.btn_save = QPushButton("Enregistrer scores")
+        self.btn_save.setProperty("primary", True)
         self.btn_save.clicked.connect(self.save_scores)
         header.addWidget(self.btn_save)
 
         self.btn_validate = QPushButton("Valider la partie")
+        self.btn_validate.setProperty("primary", True)
         self.btn_validate.clicked.connect(self.validate_round)
         header.addWidget(self.btn_validate)
 
         self.btn_unlock = QPushButton("Déverrouiller")
+        self.btn_unlock.setProperty("danger", True)
         self.btn_unlock.clicked.connect(self.unlock_round)
         header.addWidget(self.btn_unlock)
 
@@ -123,17 +135,16 @@ class RoundTab(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSortingEnabled(False)
 
-        # Excel-like selection
         self.table.setSelectionMode(QTableWidget.ExtendedSelection)
         self.table.setSelectionBehavior(QTableWidget.SelectItems)
 
-        # HTML per-name in team columns
         self._html_delegate = HtmlDelegate(self.table)
         self.table.setItemDelegateForColumn(self.COL_TEAM1, self._html_delegate)
         self.table.setItemDelegateForColumn(self.COL_TEAM2, self._html_delegate)
 
-        # IMPORTANT: stable column sizing (prevents "huge" columns)
         self._setup_column_sizing()
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.verticalHeader().setVisible(False)
 
         layout.addWidget(self.table)
 
@@ -142,31 +153,22 @@ class RoundTab(QWidget):
     def _setup_column_sizing(self) -> None:
         h = self.table.horizontalHeader()
 
-        # fixed widths for small columns
         self.table.setColumnWidth(self.COL_MATCH_ID, 70)
         self.table.setColumnWidth(self.COL_TERRAIN, 70)
         self.table.setColumnWidth(self.COL_SCORE1, 70)
         self.table.setColumnWidth(self.COL_SCORE2, 70)
-        self.table.setColumnWidth(self.COL_STATUS, 110)
+        self.table.setColumnWidth(self.COL_STATUS, 120)
 
-        # stretch team columns to fill remaining space
         h.setSectionResizeMode(self.COL_TEAM1, QHeaderView.Stretch)
         h.setSectionResizeMode(self.COL_TEAM2, QHeaderView.Stretch)
 
-        # keep fixed columns fixed
         h.setSectionResizeMode(self.COL_MATCH_ID, QHeaderView.Fixed)
         h.setSectionResizeMode(self.COL_TERRAIN, QHeaderView.Fixed)
         h.setSectionResizeMode(self.COL_SCORE1, QHeaderView.Fixed)
         h.setSectionResizeMode(self.COL_SCORE2, QHeaderView.Fixed)
         h.setSectionResizeMode(self.COL_STATUS, QHeaderView.Fixed)
-
-        # optional: nicer UX
         h.setStretchLastSection(False)
 
-        # optional: allow manual resize but keep our defaults
-        h.setSectionsMovable(False)
-
-        # If you want wrapping (can increase row heights)
         self.table.setWordWrap(False)
 
     def _is_locked(self) -> bool:
@@ -182,9 +184,7 @@ class RoundTab(QWidget):
         players = self.conn.execute("SELECT id, name FROM players").fetchall()
         id_to_name = {int(p["id"]): str(p["name"]) for p in players}
 
-        team_players = self.conn.execute(
-            "SELECT round_team_id, player_id FROM round_team_players"
-        ).fetchall()
+        team_players = self.conn.execute("SELECT round_team_id, player_id FROM round_team_players").fetchall()
         team_to_players: dict[int, list[int]] = {}
         for r in team_players:
             team_to_players.setdefault(int(r["round_team_id"]), []).append(int(r["player_id"]))
@@ -241,17 +241,44 @@ class RoundTab(QWidget):
             parts.append(f'<span style="color:{c}; font-weight:700;">{html.escape(n)}</span>')
         return " / ".join(parts)
 
+    def _refresh_dashboard(self, round_number: int, locked: bool) -> None:
+        n_matches = int(
+            self.conn.execute("SELECT COUNT(*) AS n FROM matches WHERE round_id=?", (self.round_id,)).fetchone()["n"]
+        )
+        n_valid = int(
+            self.conn.execute(
+                "SELECT COUNT(*) AS n FROM matches WHERE round_id=? AND validated=1",
+                (self.round_id,),
+            ).fetchone()["n"]
+        )
+        missing = int(
+            self.conn.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM matches
+                WHERE round_id=?
+                  AND team2_id IS NOT NULL
+                  AND (score1 IS NULL OR score2 IS NULL)
+                """,
+                (self.round_id,),
+            ).fetchone()["n"]
+        )
+        self.lbl_dash.setText(
+            f"Partie {round_number}  |  Matchs: {n_matches}  |  Validés: {n_valid}  |  Scores manquants: {missing}  |  "
+            f"{'VERROUILLÉ' if locked else 'OUVERT'}"
+        )
+
     def refresh(self) -> None:
         r = self.conn.execute("SELECT * FROM rounds WHERE id=?", (self.round_id,)).fetchone()
         if r is None:
-            self.lbl_title.setText(f"Round introuvable (id={self.round_id})")
+            self.lbl_title.setText(f"Partie introuvable (id={self.round_id})")
             return
 
         locked = self._is_locked()
-        title = f"Partie {r['number']}  |  format={r['format']}  |  mode={r['draw_mode']}"
-        if locked:
-            title += "  |  VERROUILLÉ"
-        self.lbl_title.setText(title)
+        round_number = int(r["number"])
+        self.lbl_title.setText(f"Partie {round_number}  |  {r['format']}  |  {r['draw_mode']}")
+
+        self._refresh_dashboard(round_number, locked)
 
         wins_by_name = self._wins_by_player_name()
 
@@ -269,6 +296,12 @@ class RoundTab(QWidget):
 
         self.table.setRowCount(0)
 
+        col_ok = QColor("#22C55E")
+        col_muted = QColor("#9CA3AF")
+        col_exempt = QColor("#6B7280")
+        bg_missing = QBrush(QColor("#3B2A0A"))  # dark amber
+        bg_none = QBrush(Qt.transparent)
+
         for m in matches:
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -276,6 +309,7 @@ class RoundTab(QWidget):
             match_id = int(m["id"])
             team1_id = int(m["team1_id"])
             team2_id = m["team2_id"]  # can be None
+            is_exempt = team2_id is None
 
             it_id = QTableWidgetItem(str(match_id))
             it_id.setFlags(it_id.flags() & ~Qt.ItemIsEditable)
@@ -292,8 +326,8 @@ class RoundTab(QWidget):
             it_t1.setFlags(it_t1.flags() & ~Qt.ItemIsEditable)
             self.table.setItem(row, self.COL_TEAM1, it_t1)
 
-            if team2_id is None:
-                t2_html = '<span style="font-weight:700;">EXEMPT</span>'
+            if is_exempt:
+                t2_html = '<span style="font-weight:700; color:#9CA3AF;">EXEMPT</span>'
             else:
                 t2_html = self._team_label_html(int(team2_id), wins_by_name)
             it_t2 = QTableWidgetItem(t2_html)
@@ -307,21 +341,36 @@ class RoundTab(QWidget):
             it_s1.setTextAlignment(Qt.AlignCenter)
             it_s2.setTextAlignment(Qt.AlignCenter)
 
-            if locked or team2_id is None:
+            if locked or is_exempt:
                 it_s1.setFlags(it_s1.flags() & ~Qt.ItemIsEditable)
                 it_s2.setFlags(it_s2.flags() & ~Qt.ItemIsEditable)
 
             self.table.setItem(row, self.COL_SCORE1, it_s1)
             self.table.setItem(row, self.COL_SCORE2, it_s2)
 
-            status = "VALIDÉ" if int(m["validated"]) == 1 else "NON VALIDÉ"
-            it_status = QTableWidgetItem(status)
+            validated = int(m["validated"]) == 1
+
+            if is_exempt:
+                it_status = QTableWidgetItem("EXEMPT")
+                it_status.setForeground(col_exempt)
+            else:
+                it_status = QTableWidgetItem("VALIDÉ" if validated else "NON VALIDÉ")
+                it_status.setForeground(col_ok if validated else col_muted)
+
             it_status.setFlags(it_status.flags() & ~Qt.ItemIsEditable)
             it_status.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, self.COL_STATUS, it_status)
 
-        # DO NOT resizeColumnsToContents() (causes huge columns)
-        # Keep stable sizing:
+            missing = (not is_exempt) and ((s1 is None) or (s2 is None))
+            it_s1.setBackground(bg_missing if (missing and s1 is None) else bg_none)
+            it_s2.setBackground(bg_missing if (missing and s2 is None) else bg_none)
+
+            if is_exempt:
+                for c in range(self.table.columnCount()):
+                    it = self.table.item(row, c)
+                    if it is not None and c not in (self.COL_TEAM1, self.COL_TEAM2):
+                        it.setForeground(col_exempt)
+
         self._setup_column_sizing()
 
         self.btn_save.setEnabled(not locked)

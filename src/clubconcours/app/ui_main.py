@@ -2,14 +2,25 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtWidgets import QMainWindow, QTabWidget, QMessageBox
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import QMainWindow, QTabWidget, QMessageBox, QStatusBar, QLabel
 
 from clubconcours.storage import db
 from clubconcours.app.ui_players import PlayersTab
 from clubconcours.app.ui_concours import ConcoursTab
 from clubconcours.app.ui_draw import DrawTab
 from clubconcours.app.ui_round_tab import RoundTab
-from clubconcours.app.ui_ranking import RankingTab  # NEW
+from clubconcours.app.ui_ranking import RankingTab
+from clubconcours.app.ui_export import ExportTab
+
+
+def _icon(name: str) -> QIcon:
+    # assets/icons/<name>.svg (relative to this file)
+    p = Path(__file__).resolve().parent / "assets" / "icons" / f"{name}.svg"
+    if p.exists():
+        return QIcon(str(p))
+    return QIcon()
 
 
 class MainWindow(QMainWindow):
@@ -26,16 +37,31 @@ class MainWindow(QMainWindow):
         self.tabs.setTabsClosable(False)
         self.setCentralWidget(self.tabs)
 
+        # Status bar
+        sb = QStatusBar()
+        self.setStatusBar(sb)
+        self._sb_left = QLabel("")
+        self._sb_mid = QLabel("")
+        self._sb_right = QLabel("")
+        self._sb_left.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._sb_mid.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._sb_right.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        sb.addWidget(self._sb_left, 2)
+        sb.addWidget(self._sb_mid, 1)
+        sb.addPermanentWidget(self._sb_right, 1)
+
         # Tabs
         self.players_tab = PlayersTab(self.conn)
         self.concours_tab = ConcoursTab(self.conn)
         self.draw_tab = DrawTab(self.conn)
-        self.ranking_tab = RankingTab(self.conn)  # NEW
+        self.ranking_tab = RankingTab(self.conn)
+        self.export_tab = ExportTab(self.conn)
 
-        self.tabs.addTab(self.players_tab, "Inscription")
-        self.tabs.addTab(self.concours_tab, "Concours")
-        self.tabs.addTab(self.draw_tab, "Tirage")
-        self.tabs.addTab(self.ranking_tab, "Classement")  # NEW
+        self.tabs.addTab(self.players_tab, _icon("users"), "Inscription")
+        self.tabs.addTab(self.concours_tab, _icon("settings"), "Concours")
+        self.tabs.addTab(self.draw_tab, _icon("dice"), "Tirage")
+        self.tabs.addTab(self.ranking_tab, _icon("trophy"), "Classement")
+        self.tabs.addTab(self.export_tab, _icon("export"), "Export")
 
         self.round_tabs: dict[int, RoundTab] = {}
 
@@ -58,8 +84,32 @@ class MainWindow(QMainWindow):
         self.players_tab.refresh()
         self.concours_tab.refresh()
         self.draw_tab.refresh()
-        self.ranking_tab.refresh()  # NEW
+        self.ranking_tab.refresh()
         self._sync_round_tabs()
+        self._refresh_status_bar()
+
+    def _refresh_status_bar(self) -> None:
+        players = self.conn.execute("SELECT COUNT(*) AS n FROM players").fetchone()
+        n_players = int(players["n"]) if players else 0
+
+        validated = self.conn.execute("SELECT COUNT(*) AS n FROM matches WHERE validated=1").fetchone()
+        n_validated = int(validated["n"]) if validated else 0
+
+        current_round = self.conn.execute("SELECT COALESCE(MAX(number), 0) AS m FROM rounds").fetchone()
+        cur = int(current_round["m"]) if current_round else 0
+
+        planned_row = self.conn.execute("SELECT value FROM meta WHERE key='num_rounds_planned'").fetchone()
+        planned = int(planned_row["value"]) if planned_row and str(planned_row["value"]).isdigit() else None
+
+        init_row = self.conn.execute("SELECT value FROM meta WHERE key='contest_initialized'").fetchone()
+        initialized = init_row is not None and str(init_row["value"]) == "1"
+
+        self._sb_left.setText(f"DB: {self.db_path}")
+        self._sb_mid.setText(f"Joueurs: {n_players}  |  Matchs validés: {n_validated}")
+        if planned is None:
+            self._sb_right.setText(f"Concours: {'OK' if initialized else 'NON'}  |  Partie: {cur}")
+        else:
+            self._sb_right.setText(f"Concours: {'OK' if initialized else 'NON'}  |  Partie: {cur}/{planned}")
 
     def _sync_round_tabs(self) -> None:
         rounds = self.conn.execute("SELECT id, number FROM rounds ORDER BY number").fetchall()
@@ -70,7 +120,7 @@ class MainWindow(QMainWindow):
                 tab = RoundTab(self.conn, rid)
                 tab.data_changed.connect(self._refresh_all)
                 self.round_tabs[rid] = tab
-                self.tabs.addTab(tab, f"Partie {r['number']}")
+                self.tabs.addTab(tab, _icon("round"), f"Partie {r['number']}")
 
         for i in range(self.tabs.count()):
             w = self.tabs.widget(i)
