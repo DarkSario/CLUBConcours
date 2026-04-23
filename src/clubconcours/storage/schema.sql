@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS meta (
 
 CREATE TABLE IF NOT EXISTS players (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL
+  name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'MIXTE'  -- TIREUR | PLACEUR | MIXTE
 );
 
 CREATE TABLE IF NOT EXISTS rounds (
@@ -15,6 +16,7 @@ CREATE TABLE IF NOT EXISTS rounds (
   number INTEGER NOT NULL,
   format TEXT NOT NULL,          -- SINGLE | DOUBLETTE | TRIPLETTE
   draw_mode TEXT NOT NULL,       -- RANDOM | AVOID_DUPLICATES | SWISS_BY_WINS
+  swiss_style TEXT NOT NULL DEFAULT 'STRONG', -- STRONG | BALANCED (only used for SWISS_BY_WINS)
   exempt_mode TEXT NOT NULL,     -- none | win_fixed_score
   exempt_score_for INTEGER,      -- default 13
   exempt_score_against INTEGER,  -- default 7
@@ -62,3 +64,5 @@ CREATE TABLE IF NOT EXISTS court_assignments (
 
 CREATE INDEX IF NOT EXISTS idx_matches_round_id ON matches(round_id);
 CREATE INDEX IF NOT EXISTS idx_round_teams_round_id ON round_teams(round_id);
+CREATE INDEX IF NOT EXISTS idx_players_role ON players(role);
+CREATE INDEX IF NOT EXISTS idx_rounds_swiss_style ON rounds(swiss_style);

@@ -5,13 +5,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable, Optional
 
-# ---------- Data objects ----------
+
+PLAYER_ROLES = ("TIREUR", "PLACEUR", "MIXTE")
 
 
 @dataclass(frozen=True)
 class PlayerRow:
     id: int
     name: str
+    role: str  # TIREUR | PLACEUR | MIXTE
 
 
 @dataclass(frozen=True)
@@ -29,30 +31,41 @@ class RoundRow:
     validated: int
 
 
-# ---------- Players ----------
-
-
 class PlayerRepo:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
-    def add_players(self, names: Iterable[str]) -> list[int]:
+    def add_players(self, names: Iterable[str], role: str = "MIXTE") -> list[int]:
+        role = role.strip().upper()
+        if role not in PLAYER_ROLES:
+            role = "MIXTE"
+
         ids: list[int] = []
         for name in names:
             name = name.strip()
             if not name:
                 continue
-            cur = self.conn.execute("INSERT INTO players(name) VALUES(?)", (name,))
+            cur = self.conn.execute("INSERT INTO players(name, role) VALUES(?, ?)", (name, role))
             ids.append(int(cur.lastrowid))
         self.conn.commit()
         return ids
 
+    def set_player_role(self, player_id: int, role: str) -> None:
+        role = role.strip().upper()
+        if role not in PLAYER_ROLES:
+            raise ValueError(f"Invalid role: {role}")
+        self.conn.execute("UPDATE players SET role=? WHERE id=?", (role, int(player_id)))
+        self.conn.commit()
+
     def list_players(self) -> list[PlayerRow]:
-        rows = self.conn.execute("SELECT id, name FROM players ORDER BY name COLLATE NOCASE").fetchall()
-        return [PlayerRow(int(r["id"]), str(r["name"])) for r in rows]
-
-
-# ---------- Rounds / Teams / Matches / Courts ----------
+        rows = self.conn.execute("SELECT id, name, role FROM players ORDER BY name COLLATE NOCASE").fetchall()
+        out: list[PlayerRow] = []
+        for r in rows:
+            role = str(r["role"] or "MIXTE").upper()
+            if role not in PLAYER_ROLES:
+                role = "MIXTE"
+            out.append(PlayerRow(int(r["id"]), str(r["name"]), role))
+        return out
 
 
 class RoundRepo:
@@ -167,12 +180,6 @@ class RoundRepo:
         self.conn.commit()
 
     def assign_courts_for_round(self, round_id: int, num_courts: int | None = None) -> None:
-        """
-        Assign courts (terrains) to matches of a round (excluding exempt).
-        Soft constraints:
-          - avoid repeating player/court across validated rounds
-          - help players who never played on a court in 1..12 get one
-        """
         if num_courts is None:
             num_courts = self.get_num_courts()
         if num_courts < 1:
@@ -196,7 +203,14 @@ class RoundRepo:
         if not matches:
             return
 
-        # team -> players (for this round)
+        self.conn.execute(
+            """
+            DELETE FROM court_assignments
+            WHERE match_id IN (SELECT id FROM matches WHERE round_id=?)
+            """,
+            (round_id,),
+        )
+
         team_rows = self.conn.execute(
             """
             SELECT rtp.round_team_id AS team_id, rtp.player_id AS player_id
@@ -212,7 +226,6 @@ class RoundRepo:
             tid = int(tr["team_id"])
             team_players.setdefault(tid, []).append(int(tr["player_id"]))
 
-        # History: player -> courts already played on (validated rounds only)
         hist_rows = self.conn.execute(
             """
             SELECT rtp.player_id AS player_id, ca.court_number AS court_number
@@ -232,20 +245,24 @@ class RoundRepo:
             cn = int(hr["court_number"])
             played.setdefault(pid, set()).add(cn)
 
-        prio_courts = set(range(1, 13))  # terrains 1..12
+        prio_courts = set(range(1, 13))
 
         def player_needs_prio(pid: int) -> bool:
             return len(played.get(pid, set()).intersection(prio_courts)) == 0
 
         import random
 
-        courts = list(range(1, num_courts + 1))
+        courts_all = list(range(1, num_courts + 1))
         match_list = [dict(m) for m in matches]
-        random.shuffle(match_list)  # keep it "tiré"
+        random.shuffle(match_list)
 
-        used_this_round: set[int] = set()
+        to_assign = match_list[: len(courts_all)]
+        to_null = match_list[len(courts_all) :]
 
-        for m in match_list:
+        available: list[int] = courts_all[:]
+        random.shuffle(available)
+
+        for m in to_assign:
             mid = int(m["id"])
             t1 = int(m["team1_id"])
             t2 = int(m["team2_id"])
@@ -254,27 +271,18 @@ class RoundRepo:
             best_court = None
             best_cost = None
 
-            candidates = courts[:]
+            candidates = available[:]
             random.shuffle(candidates)
 
             for c in candidates:
                 cost = 0
-
-                # small penalty if already used this round (encourage spreading)
-                if c in used_this_round:
-                    cost += 5
-
-                # big penalty if player already played on that court
                 for pid in pids:
                     if c in played.get(pid, set()):
                         cost += 1000
-
-                # bonus if a player needs to get at least one court among 1..12
                 if c in prio_courts:
                     for pid in pids:
                         if player_needs_prio(pid):
                             cost -= 50
-
                 if best_cost is None or cost < best_cost:
                     best_cost = cost
                     best_court = c
@@ -282,27 +290,26 @@ class RoundRepo:
                         break
 
             assert best_court is not None
-            used_this_round.add(best_court)
-
+            available.remove(best_court)
             self.conn.execute(
-                """
-                INSERT INTO court_assignments(match_id, court_number, validated)
-                VALUES(?, ?, 0)
-                ON CONFLICT(match_id) DO UPDATE SET court_number=excluded.court_number, validated=0
-                """,
+                "INSERT INTO court_assignments(match_id, court_number, validated) VALUES(?, ?, 0)",
                 (mid, best_court),
             )
 
-        self.conn.commit()
+        for m in to_null:
+            mid = int(m["id"])
+            self.conn.execute(
+                "INSERT INTO court_assignments(match_id, court_number, validated) VALUES(?, NULL, 0)",
+                (mid,),
+            )
 
-    # ---- lock / validate / unlock ----
+        self.conn.commit()
 
     def lock_scores(self, round_id: int) -> None:
         self.conn.execute("UPDATE rounds SET scores_locked=1 WHERE id=?", (round_id,))
         self.conn.commit()
 
     def validate_round(self, round_id: int) -> None:
-        # Require all scores for non-exempt matches before validation
         missing = self.conn.execute(
             """
             SELECT COUNT(*) AS c
@@ -316,7 +323,6 @@ class RoundRepo:
         if missing and int(missing["c"]) > 0:
             raise ValueError("Impossible de valider : tous les scores ne sont pas saisis (hors exempt).")
 
-        # Require court assignment for non-exempt matches
         missing_court = self.conn.execute(
             """
             SELECT COUNT(*) AS c
@@ -331,45 +337,25 @@ class RoundRepo:
         if missing_court and int(missing_court["c"]) > 0:
             raise ValueError("Impossible de valider : il manque des terrains pour certains matchs.")
 
-        # Validation implies locking scores AND courts
         self.conn.execute("UPDATE rounds SET scores_locked=1, validated=1 WHERE id=?", (round_id,))
         self.conn.execute("UPDATE matches SET validated=1 WHERE round_id=?", (round_id,))
         self.conn.execute(
-            """
-            UPDATE court_assignments
-            SET validated=1
-            WHERE match_id IN (SELECT id FROM matches WHERE round_id=?)
-            """,
+            "UPDATE court_assignments SET validated=1 WHERE match_id IN (SELECT id FROM matches WHERE round_id=?)",
             (round_id,),
         )
         self.conn.commit()
 
     def unlock_round(self, round_id: int) -> None:
-        # Unlock everything (scores + courts)
         self.conn.execute("UPDATE rounds SET scores_locked=0, validated=0 WHERE id=?", (round_id,))
         self.conn.execute("UPDATE matches SET validated=0 WHERE round_id=?", (round_id,))
         self.conn.execute(
-            """
-            UPDATE court_assignments
-            SET validated=0
-            WHERE match_id IN (SELECT id FROM matches WHERE round_id=?)
-            """,
+            "UPDATE court_assignments SET validated=0 WHERE match_id IN (SELECT id FROM matches WHERE round_id=?)",
             (round_id,),
         )
         self.conn.commit()
 
 
-# ---------- History / constraints helpers ----------
-
-
 class HistoryRepo:
-    """
-    Provides:
-      - co-teammate counts (player A played WITH player B)
-      - opponent counts (player A played AGAINST player B)
-    Based on VALIDATED rounds only (more stable for tournament logic).
-    """
-
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 

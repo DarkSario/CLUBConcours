@@ -31,6 +31,25 @@ DRAW_MODE_HELP: dict[str, str] = {
     "SWISS_BY_WINS": "Regroupe les joueurs selon le nombre de victoires (niveau similaire).",
 }
 
+SWISS_STYLE_LABELS: dict[str, str] = {
+    "STRONG": "Équipes fortes (proches ensemble)",
+    "BALANCED": "Équipes équilibrées (fort + faible)",
+}
+
+SWISS_STYLE_HELP: dict[str, str] = {
+    "STRONG": "Groupe les joueurs de niveau proche dans la même équipe (ex: 1-2, 3-4...). Matchs ensuite par niveau.",
+    "BALANCED": "Constitue des équipes équilibrées (ex: 1 avec dernier, 2 avec avant-dernier...). Matchs ensuite par niveau.",
+}
+
+
+def _role_short(role: str) -> str:
+    r = (role or "MIXTE").strip().upper()
+    if r == "TIREUR":
+        return "T"
+    if r == "PLACEUR":
+        return "P"
+    return "M"
+
 
 class DrawTab(QWidget):
     data_changed = Signal()
@@ -68,6 +87,12 @@ class DrawTab(QWidget):
         self._set_mode_combo_by_code(self.mode_combo, "AVOID_DUPLICATES")
         row.addWidget(self.mode_combo)
 
+        row.addWidget(QLabel("Suisse:"))
+        self.swiss_style_combo = QComboBox()
+        self._populate_swiss_style_combo(self.swiss_style_combo)
+        self._set_swiss_style_by_code(self.swiss_style_combo, "STRONG")
+        row.addWidget(self.swiss_style_combo)
+
         self.btn_modify = QPushButton("Modifier")
         self.btn_modify.clicked.connect(self._toggle_modify)
         row.addWidget(self.btn_modify)
@@ -83,8 +108,14 @@ class DrawTab(QWidget):
         self.mode_help = QLabel("")
         self.mode_help.setStyleSheet("color: #9CA3AF;")
         layout.addWidget(self.mode_help)
-        self.mode_combo.currentIndexChanged.connect(self._update_mode_help)
-        self._update_mode_help()
+
+        self.swiss_help = QLabel("")
+        self.swiss_help.setStyleSheet("color: #9CA3AF;")
+        layout.addWidget(self.swiss_help)
+
+        self.mode_combo.currentIndexChanged.connect(self._update_help)
+        self.swiss_style_combo.currentIndexChanged.connect(self._update_help)
+        self._update_help()
 
         # Info line: shows what plan is being applied for next round
         self.plan_info = QLabel("")
@@ -104,21 +135,42 @@ class DrawTab(QWidget):
             combo.addItem(DRAW_MODE_LABELS.get(code, code), code)
             combo.setItemData(combo.count() - 1, DRAW_MODE_HELP.get(code, ""), role=Qt.ToolTipRole)
 
+    def _populate_swiss_style_combo(self, combo: QComboBox) -> None:
+        combo.clear()
+        for code in ["STRONG", "BALANCED"]:
+            combo.addItem(SWISS_STYLE_LABELS.get(code, code), code)
+            combo.setItemData(combo.count() - 1, SWISS_STYLE_HELP.get(code, ""), role=Qt.ToolTipRole)
+
     def _mode_code(self) -> str:
         code = self.mode_combo.currentData()
         return str(code) if code else "AVOID_DUPLICATES"
+
+    def _swiss_style_code(self) -> str:
+        code = self.swiss_style_combo.currentData()
+        return str(code) if code else "STRONG"
 
     def _set_mode_combo_by_code(self, combo: QComboBox, code: str) -> None:
         idx = combo.findData(code)
         if idx >= 0:
             combo.setCurrentIndex(idx)
 
-    def _update_mode_help(self) -> None:
+    def _set_swiss_style_by_code(self, combo: QComboBox, code: str) -> None:
+        idx = combo.findData(code)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
+    def _update_help(self) -> None:
         code = self._mode_code()
         self.mode_help.setText("Explication : " + DRAW_MODE_HELP.get(code, ""))
 
+        swiss_code = self._swiss_style_code()
+        self.swiss_help.setText("Suisse : " + SWISS_STYLE_HELP.get(swiss_code, ""))
+
+        # enable swiss style only if swiss selected (but combo is always visible)
+        is_swiss = code == "SWISS_BY_WINS"
+        self.swiss_style_combo.setEnabled(self._edit_enabled and is_swiss)
+
     def refresh(self) -> None:
-        # If user did not unlock "Modifier", keep UI in sync with concours plan
         self._apply_edit_state()
         self._refresh_dashboard()
         if not self._edit_enabled:
@@ -127,13 +179,14 @@ class DrawTab(QWidget):
     def _apply_edit_state(self) -> None:
         self.format_combo.setEnabled(self._edit_enabled)
         self.mode_combo.setEnabled(self._edit_enabled)
+        # swiss_style_combo enabling is handled by _update_help()
         self.btn_modify.setText("Verrouiller" if self._edit_enabled else "Modifier")
+        self._update_help()
 
     def _toggle_modify(self) -> None:
         self._edit_enabled = not self._edit_enabled
         self._apply_edit_state()
         if not self._edit_enabled:
-            # When re-locking, snap back to plan for the next round
             self._apply_plan_to_combos_for_next_round()
 
     def _next_round_number(self) -> int:
@@ -190,7 +243,7 @@ class DrawTab(QWidget):
         else:
             self.plan_info.setText(f"Plan concours: Partie {rn} → (pas de plan enregistré)")
 
-        self._update_mode_help()
+        self._update_help()
 
     def _refresh_dashboard(self) -> None:
         try:
@@ -247,12 +300,13 @@ class DrawTab(QWidget):
 
         fmt = self.format_combo.currentText()
         mode_code = self._mode_code()
+        swiss_style = self._swiss_style_code()
 
         try:
             round_id = draw_round(
                 self.conn,
                 round_number=round_number,
-                cfg=RoundConfig(format=fmt, draw_mode=mode_code),
+                cfg=RoundConfig(format=fmt, draw_mode=mode_code, swiss_style=swiss_style),
                 player_ids=[p.id for p in players],
             )
         except Exception as e:
@@ -277,7 +331,7 @@ class DrawTab(QWidget):
 
         teams = self.conn.execute(
             """
-            SELECT rt.id AS team_id, rt.team_index, p.name
+            SELECT rt.id AS team_id, rt.team_index, p.name, p.role
             FROM round_teams rt
             JOIN round_team_players rtp ON rtp.round_team_id = rt.id
             JOIN players p ON p.id = rtp.player_id
@@ -291,7 +345,9 @@ class DrawTab(QWidget):
         for row in teams:
             tid = int(row["team_id"])
             team_map.setdefault(tid, {"idx": int(row["team_index"]), "players": []})
-            team_map[tid]["players"].append(str(row["name"]))
+            nm = str(row["name"])
+            rs = _role_short(str(row["role"] or "MIXTE"))
+            team_map[tid]["players"].append(f"{nm} ({rs})")
 
         lines.append("")
         for tid, info in sorted(team_map.items(), key=lambda kv: kv[1]["idx"]):
