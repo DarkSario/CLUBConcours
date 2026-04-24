@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Signal
-
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -26,7 +25,6 @@ from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 
 from clubconcours.core.ranking import compute_player_ranking
-
 
 FORMAT_LABELS: dict[str, str] = {
     "SINGLE": "Tête-à-tête",
@@ -52,6 +50,16 @@ class ValidatedMatchLine:
     team2: str | None  # None => exempt
     score1: int
     score2: int
+
+
+@dataclass
+class CourtMatchLine:
+    round_number: int
+    match_id: int
+    court_number: int | None
+    team1: str
+    team2: str | None  # None => exempt
+    status: str  # "VALIDÉ" / "NON VALIDÉ"
 
 
 class ExportTab(QWidget):
@@ -93,6 +101,12 @@ class ExportTab(QWidget):
         self.btn_validated.clicked.connect(self._export_validated_rounds)
         btn_row.addWidget(self.btn_validated)
 
+        self.btn_courts = QPushButton("Exporter terrains (planning)…")
+        self.btn_courts.setProperty("primary", True)
+        self.btn_courts.setToolTip("Exporter un planning des terrains pour affichage")
+        self.btn_courts.clicked.connect(self._export_courts_planning)
+        btn_row.addWidget(self.btn_courts)
+
         self.btn_final = QPushButton("Exporter FINAL (tout)…")
         self.btn_final.setProperty("primary", True)
         self.btn_final.setToolTip("Export complet (plan + parties validées + classement)")
@@ -106,7 +120,8 @@ class ExportTab(QWidget):
             QLabel(
                 "Notes:\n"
                 "- Parties validées = matchs avec validated=1.\n"
-                "- Le classement est calculé uniquement sur les matchs validés."
+                "- Le classement est calculé uniquement sur les matchs validés.\n"
+                "- Planning terrains = utile avant les matchs (inclut non validés)."
             )
         )
 
@@ -161,7 +176,7 @@ class ExportTab(QWidget):
     def _team_label(self, team_id: int) -> str:
         rows = self.conn.execute(
             """
-            SELECT p.name
+            SELECT p.name, p.role
             FROM round_team_players rtp
             JOIN players p ON p.id = rtp.player_id
             WHERE rtp.round_team_id=?
@@ -169,7 +184,23 @@ class ExportTab(QWidget):
             """,
             (team_id,),
         ).fetchall()
-        return " / ".join(str(r["name"]) for r in rows) or f"Team#{team_id}"
+
+        if not rows:
+            return f"Team#{team_id}"
+
+        parts: list[str] = []
+        for r in rows:
+            nm = str(r["name"])
+            role = str(r["role"] or "MIXTE").upper()
+            if role == "TIREUR":
+                rs = "T"
+            elif role == "PLACEUR":
+                rs = "P"
+            else:
+                rs = "M"
+            parts.append(f"{nm} ({rs})")
+
+        return " / ".join(parts)
 
     def _validated_matches_lines(self, only_round_number: int | None) -> list[ValidatedMatchLine]:
         params: list = []
@@ -221,6 +252,57 @@ class ExportTab(QWidget):
             )
         return out
 
+    def _courts_planning_lines(self, only_round_number: int | None) -> list[CourtMatchLine]:
+        params: list = []
+        where = "1=1"
+        if only_round_number is not None:
+            where += " AND r.number=?"
+            params.append(int(only_round_number))
+
+        rows = self.conn.execute(
+            f"""
+            SELECT r.number AS round_number,
+                   m.id AS match_id,
+                   m.team1_id, m.team2_id,
+                   m.validated AS validated,
+                   ca.court_number AS court_number
+            FROM matches m
+            JOIN rounds r ON r.id = m.round_id
+            LEFT JOIN court_assignments ca ON ca.match_id = m.id
+            WHERE {where}
+            ORDER BY r.number, 
+                     CASE WHEN ca.court_number IS NULL THEN 999999 ELSE ca.court_number END,
+                     m.id
+            """,
+            tuple(params),
+        ).fetchall()
+
+        out: list[CourtMatchLine] = []
+        for r in rows:
+            rn = int(r["round_number"])
+            mid = int(r["match_id"])
+            t1 = int(r["team1_id"])
+            t2 = r["team2_id"]
+            court = r["court_number"]
+            court_n = None if court is None else int(court)
+            validated = int(r["validated"]) == 1
+
+            team1 = self._team_label(t1)
+            team2 = None if t2 is None else self._team_label(int(t2))
+
+            out.append(
+                CourtMatchLine(
+                    round_number=rn,
+                    match_id=mid,
+                    court_number=court_n,
+                    team1=team1,
+                    team2=team2,
+                    status="VALIDÉ" if validated else "NON VALIDÉ",
+                )
+            )
+
+        return out
+
     # ---------------- file picking ----------------
 
     def _pick_pdf_path(self, default_name: str) -> Path | None:
@@ -247,8 +329,8 @@ class ExportTab(QWidget):
 
     def _styles(self):
         styles = getSampleStyleSheet()
-
         styles.add(ParagraphStyle(name="Small", parent=styles["BodyText"], fontSize=9, leading=11))
+        styles.add(ParagraphStyle(name="Tiny", parent=styles["BodyText"], fontSize=8, leading=10))
         styles.add(ParagraphStyle(name="TitleCenter", parent=styles["Title"], alignment=1))
         styles.add(ParagraphStyle(name="H2Center", parent=styles["Heading2"], alignment=1))
         styles.add(ParagraphStyle(name="H3Center", parent=styles["Heading3"], alignment=1))
@@ -396,6 +478,76 @@ class ExportTab(QWidget):
             block.append(m)
         flush_block()
 
+    def _append_courts_planning(self, story: list, styles, only_round_number: int | None) -> None:
+        lines = self._courts_planning_lines(only_round_number)
+
+        story.append(Paragraph("Planning des terrains (avant matchs)", styles["H2Center"]))
+        if only_round_number is not None:
+            story.append(Paragraph(f"Filtre: Partie {only_round_number}", styles["SmallCenter"]))
+        story.append(Spacer(1, 6 * mm))
+
+        if not lines:
+            story.append(Paragraph("Aucun match.", styles["SmallCenter"]))
+            story.append(Spacer(1, 6 * mm))
+            return
+
+        current_rn = None
+        block: list[CourtMatchLine] = []
+
+        def flush_block() -> None:
+            nonlocal block, current_rn
+            if not block or current_rn is None:
+                return
+
+            fmt_code, mode_code = self._round_meta(current_rn)
+            fmt_lbl = FORMAT_LABELS.get(fmt_code or "", fmt_code or "")
+            mode_lbl = DRAW_MODE_LABELS.get(mode_code or "", mode_code or "")
+
+            story.append(Paragraph(f"Partie {current_rn}", styles["H3Center"]))
+            if fmt_lbl or mode_lbl:
+                story.append(Paragraph(f"{fmt_lbl}  |  {mode_lbl}", styles["SmallCenter"]))
+            story.append(Spacer(1, 2 * mm))
+
+            rows = [["Terrain", "Match", "Équipe A", "Équipe B", "Statut"]]
+            for m in block:
+                court_txt = "" if m.court_number is None else str(m.court_number)
+                if m.team2 is None:
+                    rows.append([court_txt, str(m.match_id), m.team1, "EXEMPT", m.status])
+                else:
+                    rows.append([court_txt, str(m.match_id), m.team1, m.team2, m.status])
+
+            t = Table(rows, colWidths=[16 * mm, 14 * mm, 72 * mm, 72 * mm, 18 * mm], hAlign="CENTER")
+            t.setStyle(self._table_style_header("#14532D"))  # dark green
+            t.setStyle(
+                TableStyle(
+                    [
+                        ("ALIGN", (0, 1), (1, -1), "CENTER"),
+                        ("ALIGN", (4, 1), (4, -1), "CENTER"),
+                        ("ALIGN", (2, 1), (3, -1), "LEFT"),
+                        ("FONTSIZE", (0, 1), (-1, -1), 8),
+                        ("TOPPADDING", (0, 0), (-1, -1), 4),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ]
+                )
+            )
+            story.append(t)
+
+            # also list "no court"
+            no_court = [m for m in block if m.court_number is None and m.team2 is not None]
+            if no_court:
+                story.append(Spacer(1, 2 * mm))
+                story.append(Paragraph("⚠ Matchs sans terrain (à affecter): " + ", ".join(str(x.match_id) for x in no_court), styles["Small"]))
+
+            story.append(Spacer(1, 8 * mm))
+            block = []
+
+        for m in lines:
+            if current_rn != m.round_number:
+                flush_block()
+                current_rn = m.round_number
+            block.append(m)
+        flush_block()
+
     def _append_footer_generated(self, story: list, styles) -> None:
         story.append(Spacer(1, 2 * mm))
         story.append(Paragraph(f"Généré le {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles["SmallCenter"]))
@@ -441,6 +593,31 @@ class ExportTab(QWidget):
 
             self._append_header(story, styles)
             self._append_validated_rounds(story, styles, only_rn)
+            self._append_footer_generated(story, styles)
+
+            doc.build(story)
+        except Exception as e:
+            QMessageBox.critical(self, "Export PDF", f"Erreur: {e}")
+            return
+
+        QMessageBox.information(self, "Export PDF", f"PDF exporté:\n{out}")
+
+    def _export_courts_planning(self) -> None:
+        name, _, _ = self._tournament_header()
+        only_rn = int(self.spin_round.value()) or None
+        suffix = "toutes" if only_rn is None else f"partie_{only_rn}"
+        out = self._pick_pdf_path(f"{name}_terrains_{suffix}.pdf".replace("/", "-").replace("\\", "-"))
+        if out is None:
+            return
+
+        try:
+            styles = self._styles()
+            story: list = []
+            doc = self._make_doc(out, f"{name} - Terrains (planning)")
+
+            self._append_header(story, styles)
+            self._append_params(story, styles)
+            self._append_courts_planning(story, styles, only_rn)
             self._append_footer_generated(story, styles)
 
             doc.build(story)

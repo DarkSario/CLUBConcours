@@ -65,24 +65,194 @@ def _load_roles(conn: sqlite3.Connection, player_ids: list[int]) -> dict[int, st
 
 
 def _role_score(team: list[int], role_by_player: dict[int, str], team_size: int) -> int:
+    """
+    Lower is better.
+    For DOUBLETTE:
+      0 = T+P
+      5 = (T+M) or (P+M)
+      10 = M+M
+      50 = T+T or P+P
+    For TRIPLETTE:
+      0 = has T and P
+      10 = has T xor P (but not both)
+      30 = only M
+    """
     if team_size <= 1:
         return 0
+
     roles = [role_by_player.get(pid, "MIXTE") for pid in team]
     has_t = any(r == "TIREUR" for r in roles)
     has_p = any(r == "PLACEUR" for r in roles)
+    n_m = sum(1 for r in roles if r == "MIXTE")
 
     if team_size == 2:
         if has_t and has_p:
             return 0
-        if ("MIXTE" in roles) and (has_t or has_p):
+        if (has_t or has_p) and n_m == 1:
             return 5
-        return 20
+        if n_m == 2:
+            return 10
+        return 50
+
+    if has_t and has_p:
+        return 0
+    if has_t or has_p:
+        return 10
+    return 30
+
+
+def _debug_role_stats(
+    teams: list[list[int]],
+    team_size: int,
+    role_by_player: dict[int, str],
+    prefix: str,
+) -> None:
+    """
+    Prints role distribution for debugging.
+    """
+    if not teams:
+        print(f"[draw] {prefix}: no teams")
+        return
+
+    if team_size == 2:
+        tp = tm = pm = mm = tt = pp = 0
+        for t in teams:
+            if len(t) != 2:
+                continue
+            r1 = role_by_player.get(t[0], "MIXTE")
+            r2 = role_by_player.get(t[1], "MIXTE")
+            s = {r1, r2}
+            if "TIREUR" in s and "PLACEUR" in s:
+                tp += 1
+            elif "TIREUR" in s and "MIXTE" in s:
+                tm += 1
+            elif "PLACEUR" in s and "MIXTE" in s:
+                pm += 1
+            elif s == {"MIXTE"}:
+                mm += 1
+            elif s == {"TIREUR"}:
+                tt += 1
+            elif s == {"PLACEUR"}:
+                pp += 1
+
+        print(f"[draw] {prefix} roles (doublette): TP={tp} TM={tm} PM={pm} MM={mm} TT={tt} PP={pp}")
+
+    elif team_size == 3:
+        has_tp = t_only = p_only = all_m = 0
+        for t in teams:
+            if len(t) != 3:
+                continue
+            roles = [role_by_player.get(pid, "MIXTE") for pid in t]
+            has_t = any(r == "TIREUR" for r in roles)
+            has_p = any(r == "PLACEUR" for r in roles)
+            if has_t and has_p:
+                has_tp += 1
+            elif has_t and not has_p:
+                t_only += 1
+            elif has_p and not has_t:
+                p_only += 1
+            else:
+                all_m += 1
+
+        print(
+            f"[draw] {prefix} roles (triplette): has(T&P)={has_tp} T_only={t_only} P_only={p_only} all_M={all_m}"
+        )
     else:
-        if has_t and has_p:
-            return 0
-        if ("MIXTE" in roles) and (has_t or has_p):
-            return 5
-        return 20
+        print(f"[draw] {prefix}: team_size={team_size} (no role stats)")
+
+
+def _build_doublettes_role_first(
+    player_ids: list[int],
+    role_by_player: dict[int, str],
+) -> tuple[list[list[int]], Optional[list[int]]]:
+    t = [pid for pid in player_ids if role_by_player.get(pid, "MIXTE") == "TIREUR"]
+    p = [pid for pid in player_ids if role_by_player.get(pid, "MIXTE") == "PLACEUR"]
+    m = [pid for pid in player_ids if role_by_player.get(pid, "MIXTE") == "MIXTE"]
+
+    random.shuffle(t)
+    random.shuffle(p)
+    random.shuffle(m)
+
+    teams: list[list[int]] = []
+
+    while t and p:
+        teams.append([t.pop(), p.pop()])
+
+    while t and m:
+        teams.append([t.pop(), m.pop()])
+    while p and m:
+        teams.append([p.pop(), m.pop()])
+
+    while len(m) >= 2:
+        teams.append([m.pop(), m.pop()])
+
+    while len(t) >= 2:
+        teams.append([t.pop(), t.pop()])
+    while len(p) >= 2:
+        teams.append([p.pop(), p.pop()])
+
+    leftovers = t + p + m
+    random.shuffle(leftovers)
+    exempt_team = leftovers if leftovers else None
+    return teams, exempt_team
+
+
+def _build_triplettes_role_first(
+    player_ids: list[int],
+    role_by_player: dict[int, str],
+) -> tuple[list[list[int]], Optional[list[int]]]:
+    t = [pid for pid in player_ids if role_by_player.get(pid, "MIXTE") == "TIREUR"]
+    p = [pid for pid in player_ids if role_by_player.get(pid, "MIXTE") == "PLACEUR"]
+    m = [pid for pid in player_ids if role_by_player.get(pid, "MIXTE") == "MIXTE"]
+
+    random.shuffle(t)
+    random.shuffle(p)
+    random.shuffle(m)
+
+    teams: list[list[int]] = []
+
+    while t and p and (m or t or p):
+        a = t.pop()
+        b = p.pop()
+        if m:
+            c = m.pop()
+        elif t:
+            c = t.pop()
+        else:
+            c = p.pop()
+        teams.append([a, b, c])
+
+    while t and len(m) >= 2:
+        teams.append([t.pop(), m.pop(), m.pop()])
+    while p and len(m) >= 2:
+        teams.append([p.pop(), m.pop(), m.pop()])
+
+    while len(m) >= 3:
+        teams.append([m.pop(), m.pop(), m.pop()])
+
+    leftovers = t + p + m
+    random.shuffle(leftovers)
+    while len(leftovers) >= 3:
+        teams.append([leftovers.pop(), leftovers.pop(), leftovers.pop()])
+
+    exempt_team = leftovers if leftovers else None
+    return teams, exempt_team
+
+
+def _build_teams_non_swiss(
+    player_ids: list[int],
+    team_size: int,
+    role_by_player: dict[int, str],
+) -> tuple[list[list[int]], Optional[list[int]]]:
+    if team_size == 1:
+        pool = player_ids[:]
+        random.shuffle(pool)
+        return [[pid] for pid in pool], None
+    if team_size == 2:
+        return _build_doublettes_role_first(player_ids, role_by_player)
+    if team_size == 3:
+        return _build_triplettes_role_first(player_ids, role_by_player)
+    raise ValueError(f"Unsupported team size: {team_size}")
 
 
 def _build_teams_role_aware_from_order(
@@ -91,13 +261,6 @@ def _build_teams_role_aware_from_order(
     role_by_player: dict[int, str],
     swiss_style: str,
 ) -> tuple[list[list[int]], Optional[list[int]]]:
-    """
-    Build teams from an already ordered list of players (best -> worst).
-    swiss_style:
-      - STRONG: (1,2),(3,4) ...
-      - BALANCED: (1,last),(2,last-1) ...
-    Then inside each team, we may swap within a small window to try to get T+P (best-effort).
-    """
     if team_size == 1:
         return [[pid] for pid in ordered], None
 
@@ -109,7 +272,6 @@ def _build_teams_role_aware_from_order(
             if team_size == 2:
                 teams.append([pool.pop(0), pool.pop(-1)])
             else:
-                # 3: best + worst + middle-worst
                 a = pool.pop(0)
                 b = pool.pop(-1)
                 c = pool.pop(-1) if pool else None
@@ -125,7 +287,6 @@ def _build_teams_role_aware_from_order(
 
     exempt_team = pool[:] if pool else None
 
-    # Small local improve for roles: try swaps between neighboring teams
     if team_size in (2, 3) and len(teams) >= 2:
         for _ in range(200):
             improved = False
@@ -163,6 +324,60 @@ def _build_teams_role_aware_from_order(
     return teams, exempt_team
 
 
+def _improve_teams_avoid_duplicates(
+    teams: list[list[int]],
+    team_size: int,
+    role_by_player: dict[int, str],
+    teammate_counts: dict[tuple[int, int], int],
+    iterations: int = 1200,
+) -> list[list[int]]:
+    if team_size <= 1 or len(teams) < 2:
+        return teams
+
+    def teammate_penalty(team: list[int]) -> int:
+        p = 0
+        t = sorted(team)
+        for i in range(len(t)):
+            for j in range(i + 1, len(t)):
+                p += teammate_counts.get(_pair_key(t[i], t[j]), 0)
+        return p
+
+    cur = [t[:] for t in teams]
+
+    for _ in range(iterations):
+        i = random.randrange(len(cur))
+        j = random.randrange(len(cur))
+        if i == j:
+            continue
+
+        a = cur[i][:]
+        b = cur[j][:]
+
+        ai = random.randrange(team_size)
+        bj = random.randrange(team_size)
+
+        a2 = a[:]
+        b2 = b[:]
+        a2[ai], b2[bj] = b2[bj], a2[ai]
+
+        role_before = _role_score(a, role_by_player, team_size) + _role_score(b, role_by_player, team_size)
+        role_after = _role_score(a2, role_by_player, team_size) + _role_score(b2, role_by_player, team_size)
+        if role_after > role_before:
+            continue
+
+        pen_before = teammate_penalty(a) + teammate_penalty(b)
+        pen_after = teammate_penalty(a2) + teammate_penalty(b2)
+
+        better = pen_after < pen_before or (pen_after == pen_before and role_after < role_before)
+        if not better:
+            continue
+
+        cur[i] = a2
+        cur[j] = b2
+
+    return cur
+
+
 def draw_round(
     conn: sqlite3.Connection,
     round_number: int,
@@ -191,7 +406,6 @@ def draw_round(
         exempt_score_against=cfg.exempt_score_against,
     )
 
-    # Store swiss_style into rounds (best effort; migration must exist)
     try:
         conn.execute("UPDATE rounds SET swiss_style=? WHERE id=?", (swiss_style, round_id))
         conn.commit()
@@ -223,62 +437,27 @@ def draw_round(
         return p
 
     # --- build teams ---
-    pool = player_ids[:]
-
     if cfg.draw_mode == "SWISS_BY_WINS":
-        # order by level
+        pool = player_ids[:]
         pool.sort(
             key=lambda pid: (wins_by_player.get(pid, 0), plus_by_player.get(pid, 0)),
             reverse=True,
         )
         teams, exempt_team = _build_teams_role_aware_from_order(pool, team_size, role_by_player, swiss_style)
+        _debug_role_stats(teams, team_size, role_by_player, prefix=f"{cfg.draw_mode}/{swiss_style} BEFORE")
     else:
-        if cfg.draw_mode == "SWISS_BY_WINS":
-            pass
-        if cfg.draw_mode == "SWISS_BY_WINS":
-            pass
+        teams, exempt_team = _build_teams_non_swiss(player_ids, team_size, role_by_player)
+        _debug_role_stats(teams, team_size, role_by_player, prefix=f"{cfg.draw_mode} BEFORE")
 
-        if cfg.draw_mode == "SWISS_BY_WINS":
-            teams = []
-            exempt_team = None
-        else:
-            random.shuffle(pool)
-            teams: list[list[int]] = []
-            while len(pool) >= team_size:
-                teams.append([pool.pop() for _ in range(team_size)])
-            exempt_team = pool[:] if pool else None
-
-    # Improve: avoid repeating teammates (but NOT in swiss)
-    if cfg.draw_mode != "SWISS_BY_WINS":
-
-        def score_team_set(ts: list[list[int]]) -> int:
-            # keep role constraint strong
-            return sum(teammate_penalty(t) for t in ts) + 10 * sum(
-                _role_score(t, role_by_player, team_size) for t in ts
+        if cfg.draw_mode == "AVOID_DUPLICATES":
+            teams = _improve_teams_avoid_duplicates(
+                teams=teams,
+                team_size=team_size,
+                role_by_player=role_by_player,
+                teammate_counts=teammate_counts,
+                iterations=1500,
             )
-
-        best = teams
-        best_score = score_team_set(best)
-
-        for _ in range(200):
-            cand = [t[:] for t in teams]
-            flat = [pid for t in cand for pid in t]
-            random.shuffle(flat)
-
-            rebuilt: list[list[int]] = []
-            j = 0
-            while j + team_size <= len(flat):
-                rebuilt.append(flat[j : j + team_size])
-                j += team_size
-
-            s = score_team_set(rebuilt)
-            if s < best_score:
-                best = rebuilt
-                best_score = s
-                if best_score == 0:
-                    break
-
-        teams = best
+            _debug_role_stats(teams, team_size, role_by_player, prefix=f"{cfg.draw_mode} AFTER")
 
     # --- persist teams ---
     team_ids: list[int] = []
@@ -296,7 +475,6 @@ def draw_round(
 
     # --- pairing ---
     if cfg.draw_mode == "SWISS_BY_WINS":
-        # True swiss feeling: sort by strength and pair adjacent
         team_ids.sort(
             key=lambda tid: (
                 -_team_strength(team_players_by_id[tid], wins_by_player, plus_by_player),
@@ -313,8 +491,6 @@ def draw_round(
         if i < len(team_ids):
             pairs.append((team_ids[i], None))
 
-        # Avoid immediate re-match by swapping with next pair if needed (simple local fix)
-        # (only uses opponent_penalty, doesn't guarantee perfect but improves)
         for i in range(len(pairs) - 1):
             a1, b1 = pairs[i]
             a2, b2 = pairs[i + 1]

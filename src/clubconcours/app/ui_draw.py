@@ -166,7 +166,6 @@ class DrawTab(QWidget):
         swiss_code = self._swiss_style_code()
         self.swiss_help.setText("Suisse : " + SWISS_STYLE_HELP.get(swiss_code, ""))
 
-        # enable swiss style only if swiss selected (but combo is always visible)
         is_swiss = code == "SWISS_BY_WINS"
         self.swiss_style_combo.setEnabled(self._edit_enabled and is_swiss)
 
@@ -179,7 +178,6 @@ class DrawTab(QWidget):
     def _apply_edit_state(self) -> None:
         self.format_combo.setEnabled(self._edit_enabled)
         self.mode_combo.setEnabled(self._edit_enabled)
-        # swiss_style_combo enabling is handled by _update_help()
         self.btn_modify.setText("Verrouiller" if self._edit_enabled else "Modifier")
         self._update_help()
 
@@ -290,7 +288,6 @@ class DrawTab(QWidget):
             )
             return
 
-        # Apply plan at click-time unless user unlocked Modify
         if not self._edit_enabled:
             fmt, mode = self._get_plan_entry(round_number)
             if fmt:
@@ -313,7 +310,6 @@ class DrawTab(QWidget):
             QMessageBox.critical(self, "Tirage", str(e))
             return
 
-        # after a draw, lock editing again (so next round uses plan by default)
         self._edit_enabled = False
         self._apply_edit_state()
 
@@ -321,13 +317,82 @@ class DrawTab(QWidget):
         self.data_changed.emit()
         self.round_created.emit(round_id)
 
-        # update dashboard + info for next round
         self._refresh_dashboard()
         self._apply_plan_to_combos_for_next_round()
+
+    # ---------- role stats in output ----------
+
+    def _role_stats_text(self, round_id: int) -> str:
+        r = self.conn.execute("SELECT format FROM rounds WHERE id=?", (round_id,)).fetchone()
+        fmt = str(r["format"]) if r else "?"
+
+        rows = self.conn.execute(
+            """
+            SELECT rt.id AS team_id, p.role AS role
+            FROM round_teams rt
+            JOIN round_team_players rtp ON rtp.round_team_id = rt.id
+            JOIN players p ON p.id = rtp.player_id
+            WHERE rt.round_id=?
+            ORDER BY rt.id
+            """,
+            (round_id,),
+        ).fetchall()
+
+        team_roles: dict[int, list[str]] = {}
+        for rr in rows:
+            tid = int(rr["team_id"])
+            team_roles.setdefault(tid, []).append(str(rr["role"] or "MIXTE").upper())
+
+        # Determine team size from format (ignore incomplete/exempt team if any)
+        if fmt == "SINGLE":
+            return "Rôles: (SINGLE) n/a"
+
+        if fmt == "DOUBLETTE":
+            tp = tm = pm = mm = tt = pp = 0
+            for roles in team_roles.values():
+                if len(roles) != 2:
+                    continue
+                s = set(roles)
+                if "TIREUR" in s and "PLACEUR" in s:
+                    tp += 1
+                elif "TIREUR" in s and "MIXTE" in s:
+                    tm += 1
+                elif "PLACEUR" in s and "MIXTE" in s:
+                    pm += 1
+                elif s == {"MIXTE"}:
+                    mm += 1
+                elif s == {"TIREUR"}:
+                    tt += 1
+                elif s == {"PLACEUR"}:
+                    pp += 1
+            return f"Rôles équipes (DOUBLETTE): TP={tp}  TM={tm}  PM={pm}  MM={mm}  TT={tt}  PP={pp}"
+
+        # TRIPLETTE
+        has_tp = t_only = p_only = all_m = 0
+        for roles in team_roles.values():
+            if len(roles) != 3:
+                continue
+            has_t = "TIREUR" in roles
+            has_p = "PLACEUR" in roles
+            if has_t and has_p:
+                has_tp += 1
+            elif has_t and not has_p:
+                t_only += 1
+            elif has_p and not has_t:
+                p_only += 1
+            else:
+                all_m += 1
+
+        return f"Rôles équipes (TRIPLETTE): has(T&P)={has_tp}  T_only={t_only}  P_only={p_only}  all_M={all_m}"
+
+    # ---------- formatting output ----------
 
     def _format_round(self, round_id: int) -> str:
         r = self.conn.execute("SELECT * FROM rounds WHERE id=?", (round_id,)).fetchone()
         lines = [f"Round {r['number']} (id={round_id}) format={r['format']} mode={r['draw_mode']}"]
+
+        # Add role stats line
+        lines.append(self._role_stats_text(round_id))
 
         teams = self.conn.execute(
             """
