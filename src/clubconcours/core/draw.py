@@ -267,6 +267,10 @@ def _build_teams_non_swiss(
 
 
 def _role_first_from_pool(pool: list[int], team_size: int, role_by_player: dict[int, str]) -> list[list[int]]:
+    """
+    Build teams in a pool without considering wins (wins already handled by caller).
+    Ensures role-first logic is used.
+    """
     if team_size == 1:
         return [[pid] for pid in pool]
     if team_size == 2:
@@ -281,6 +285,10 @@ def _group_players_by_wins(
     wins_by_player: dict[int, int],
     plus_by_player: dict[int, int],
 ) -> list[tuple[int, list[int]]]:
+    """
+    Returns list of (wins, [players...]) sorted by wins desc.
+    Players inside a win group are sorted by plus desc (tie-break).
+    """
     groups: dict[int, list[int]] = {}
     for pid in player_ids:
         w = int(wins_by_player.get(pid, 0))
@@ -319,7 +327,7 @@ def _build_teams_swiss_strict_by_wins(
     teams: list[list[int]] = []
     remainder: dict[int, list[int]] = {}
 
-    # Step 1: teams inside each win group
+    # Step 1: full teams inside each win group
     for w, grp in groups:
         grp2 = grp[:]
 
@@ -545,22 +553,47 @@ def draw_round(
 
     # --- pairing ---
     if cfg.draw_mode == "SWISS_BY_WINS":
-        team_ids.sort(
-            key=lambda tid: (
-                -_team_strength(team_players_by_id[tid], wins_by_player, plus_by_player),
-                teammate_penalty(team_players_by_id[tid]),
-                tid,
-            )
-        )
+        # STRICT pairing by TEAM wins (sum of player wins).
+        # This makes "2 wins vs 2 wins" imperative when possible.
+        team_ids_by_teamwins: dict[int, list[int]] = {}
+        for tid in team_ids:
+            tw = sum(wins_by_player.get(pid, 0) for pid in team_players_by_id[tid])
+            team_ids_by_teamwins.setdefault(int(tw), []).append(tid)
+
+        bands = sorted(team_ids_by_teamwins.keys(), reverse=True)
 
         pairs: list[tuple[int, Optional[int]]] = []
-        i = 0
-        while i + 1 < len(team_ids):
-            pairs.append((team_ids[i], team_ids[i + 1]))
-            i += 2
-        if i < len(team_ids):
-            pairs.append((team_ids[i], None))
+        carry_tid: Optional[int] = None
 
+        for tw in bands:
+            band = team_ids_by_teamwins[tw][:]
+
+            # order inside band
+            band.sort(
+                key=lambda tid: (
+                    -sum(plus_by_player.get(pid, 0) for pid in team_players_by_id[tid]),
+                    teammate_penalty(team_players_by_id[tid]),
+                    tid,
+                )
+            )
+
+            if carry_tid is not None:
+                band.insert(0, carry_tid)
+                carry_tid = None
+
+            # if odd, carry one team down
+            if len(band) % 2 == 1:
+                carry_tid = band.pop(-1)
+
+            i = 0
+            while i + 1 < len(band):
+                pairs.append((band[i], band[i + 1]))
+                i += 2
+
+        if carry_tid is not None:
+            pairs.append((carry_tid, None))
+
+        # Local swap to reduce repeat opponents
         for i in range(len(pairs) - 1):
             a1, b1 = pairs[i]
             a2, b2 = pairs[i + 1]
