@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: clubconcours
+Version: 0.1.0
+Summary: Gestion de concours (v2) - PySide6 + SQLite
+Requires-Python: >=3.10
+Requires-Dist: PySide6>=6.6
+Requires-Dist: openpyxl>=3.1
+Requires-Dist: reportlab>=4.0

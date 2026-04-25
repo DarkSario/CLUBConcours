@@ -166,6 +166,7 @@ class DrawTab(QWidget):
         swiss_code = self._swiss_style_code()
         self.swiss_help.setText("Suisse : " + SWISS_STYLE_HELP.get(swiss_code, ""))
 
+        # combo always visible, enabled only when mode is swiss AND unlocked
         is_swiss = code == "SWISS_BY_WINS"
         self.swiss_style_combo.setEnabled(self._edit_enabled and is_swiss)
 
@@ -190,6 +191,24 @@ class DrawTab(QWidget):
     def _next_round_number(self) -> int:
         r = self.conn.execute("SELECT COALESCE(MAX(number), 0) AS m FROM rounds").fetchone()
         return int(r["m"]) + 1
+
+    def _previous_round_validated(self, round_number: int) -> bool:
+        """
+        Enforce strict sequential play: round N cannot be drawn until round N-1 is validated.
+        Always-on (user requested mandatory).
+        """
+        if round_number <= 1:
+            return True
+        r = self.conn.execute(
+            "SELECT validated FROM rounds WHERE number=?",
+            (int(round_number - 1),),
+        ).fetchone()
+        if r is None:
+            return False
+        try:
+            return int(r["validated"]) == 1
+        except Exception:
+            return False
 
     def _meta_get(self, key: str) -> str | None:
         row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -245,9 +264,13 @@ class DrawTab(QWidget):
 
     def _refresh_dashboard(self) -> None:
         try:
-            n_players = int(self.conn.execute("SELECT COUNT(*) AS n FROM players").fetchone()["n"])
+            n_players = int(self.conn.execute("SELECT COUNT(*) AS n FROM players WHERE active=1").fetchone()["n"])
         except Exception:
-            n_players = 0
+            # if migration not applied yet, fallback:
+            try:
+                n_players = int(self.conn.execute("SELECT COUNT(*) AS n FROM players").fetchone()["n"])
+            except Exception:
+                n_players = 0
 
         try:
             n_rounds = int(self.conn.execute("SELECT COUNT(*) AS n FROM rounds").fetchone()["n"])
@@ -264,7 +287,7 @@ class DrawTab(QWidget):
         plan_txt = "?" if planned is None else str(planned)
 
         self.lbl_dash.setText(
-            f"Joueurs: {n_players}  |  Parties: {n_rounds}/{plan_txt}  |  Matchs validés: {n_validated}  |  Prochaine: {nxt}"
+            f"Joueurs actifs: {n_players}  |  Parties: {n_rounds}/{plan_txt}  |  Matchs validés: {n_validated}  |  Prochaine: {nxt}"
         )
 
     def _draw(self) -> None:
@@ -272,12 +295,22 @@ class DrawTab(QWidget):
             QMessageBox.warning(self, "Tirage", "Concours non initialisé (au démarrage).")
             return
 
-        players = self.player_repo.list_players()
+        # IMPORTANT: only active players are drawn
+        players = self.player_repo.list_players(active_only=True)
         if len(players) < 2:
-            QMessageBox.warning(self, "Tirage", "Ajoute au moins 2 joueurs.")
+            QMessageBox.warning(self, "Tirage", "Ajoute au moins 2 joueurs actifs.")
             return
 
         round_number = self._next_round_number()
+
+        # Mandatory sequential validation: must validate N-1 before drawing N
+        if not self._previous_round_validated(round_number):
+            QMessageBox.warning(
+                self,
+                "Tirage",
+                f"Impossible de tirer la partie {round_number} : la partie {round_number - 1} n'est pas validée.",
+            )
+            return
 
         planned = self._num_rounds_planned()
         if planned is not None and round_number > planned:
@@ -343,7 +376,6 @@ class DrawTab(QWidget):
             tid = int(rr["team_id"])
             team_roles.setdefault(tid, []).append(str(rr["role"] or "MIXTE").upper())
 
-        # Determine team size from format (ignore incomplete/exempt team if any)
         if fmt == "SINGLE":
             return "Rôles: (SINGLE) n/a"
 
@@ -367,7 +399,6 @@ class DrawTab(QWidget):
                     pp += 1
             return f"Rôles équipes (DOUBLETTE): TP={tp}  TM={tm}  PM={pm}  MM={mm}  TT={tt}  PP={pp}"
 
-        # TRIPLETTE
         has_tp = t_only = p_only = all_m = 0
         for roles in team_roles.values():
             if len(roles) != 3:
@@ -391,7 +422,6 @@ class DrawTab(QWidget):
         r = self.conn.execute("SELECT * FROM rounds WHERE id=?", (round_id,)).fetchone()
         lines = [f"Round {r['number']} (id={round_id}) format={r['format']} mode={r['draw_mode']}"]
 
-        # Add role stats line
         lines.append(self._role_stats_text(round_id))
 
         teams = self.conn.execute(

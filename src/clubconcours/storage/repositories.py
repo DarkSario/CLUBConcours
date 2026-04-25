@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,6 +15,7 @@ class PlayerRow:
     id: int
     name: str
     role: str  # TIREUR | PLACEUR | MIXTE
+    active: int  # 1/0
 
 
 @dataclass(frozen=True)
@@ -45,10 +47,20 @@ class PlayerRepo:
             name = name.strip()
             if not name:
                 continue
-            cur = self.conn.execute("INSERT INTO players(name, role) VALUES(?, ?)", (name, role))
+            cur = self.conn.execute(
+                "INSERT INTO players(name, role, active) VALUES(?, ?, 1)",
+                (name, role),
+            )
             ids.append(int(cur.lastrowid))
         self.conn.commit()
         return ids
+
+    def rename_player(self, player_id: int, new_name: str) -> None:
+        new_name = new_name.strip()
+        if not new_name:
+            raise ValueError("Nom invalide.")
+        self.conn.execute("UPDATE players SET name=? WHERE id=?", (new_name, int(player_id)))
+        self.conn.commit()
 
     def set_player_role(self, player_id: int, role: str) -> None:
         role = role.strip().upper()
@@ -57,15 +69,28 @@ class PlayerRepo:
         self.conn.execute("UPDATE players SET role=? WHERE id=?", (role, int(player_id)))
         self.conn.commit()
 
-    def list_players(self) -> list[PlayerRow]:
-        rows = self.conn.execute("SELECT id, name, role FROM players ORDER BY name COLLATE NOCASE").fetchall()
+    def set_player_active(self, player_id: int, active: bool) -> None:
+        self.conn.execute("UPDATE players SET active=? WHERE id=?", (1 if active else 0, int(player_id)))
+        self.conn.commit()
+
+    def list_players(self, active_only: bool = False) -> list[PlayerRow]:
+        if active_only:
+            rows = self.conn.execute(
+                "SELECT id, name, role, active FROM players WHERE active=1 ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        else:
+            rows = self.conn.execute("SELECT id, name, role, active FROM players ORDER BY name COLLATE NOCASE").fetchall()
+
         out: list[PlayerRow] = []
         for r in rows:
             role = str(r["role"] or "MIXTE").upper()
             if role not in PLAYER_ROLES:
                 role = "MIXTE"
-            out.append(PlayerRow(int(r["id"]), str(r["name"]), role))
+            out.append(PlayerRow(int(r["id"]), str(r["name"]), role, int(r["active"] or 0)))
         return out
+
+    def list_active_players(self) -> list[PlayerRow]:
+        return self.list_players(active_only=True)
 
 
 class RoundRepo:
@@ -226,6 +251,22 @@ class RoundRepo:
             tid = int(tr["team_id"])
             team_players.setdefault(tid, []).append(int(tr["player_id"]))
 
+        def team_signature(team_id: int) -> tuple[int, ...]:
+            return tuple(sorted(team_players.get(team_id, [])))
+
+        # ---- history: last 2 validated rounds + global per-player ----
+        last2 = self.conn.execute(
+            """
+            SELECT id
+            FROM rounds
+            WHERE validated=1
+            ORDER BY number DESC
+            LIMIT 2
+            """
+        ).fetchall()
+        last2_round_ids = [int(r["id"]) for r in last2]
+
+        # Global per-player terrain history (validated rounds)
         hist_rows = self.conn.execute(
             """
             SELECT rtp.player_id AS player_id, ca.court_number AS court_number
@@ -239,18 +280,73 @@ class RoundRepo:
             """
         ).fetchall()
 
-        played: dict[int, set[int]] = {}
+        played_all: dict[int, set[int]] = {}
         for hr in hist_rows:
             pid = int(hr["player_id"])
             cn = int(hr["court_number"])
-            played.setdefault(pid, set()).add(cn)
+            played_all.setdefault(pid, set()).add(cn)
+
+        # Recent per-player history (last 2 validated rounds)
+        played_recent: dict[int, set[int]] = {}
+        if last2_round_ids:
+            q = ",".join(["?"] * len(last2_round_ids))
+            recent_rows = self.conn.execute(
+                f"""
+                SELECT rtp.player_id AS player_id, ca.court_number AS court_number
+                FROM court_assignments ca
+                JOIN matches m ON m.id = ca.match_id
+                JOIN rounds r ON r.id = m.round_id
+                JOIN round_team_players rtp ON rtp.round_team_id IN (m.team1_id, m.team2_id)
+                WHERE r.id IN ({q})
+                  AND m.team2_id IS NOT NULL
+                  AND ca.court_number IS NOT NULL
+                """,
+                tuple(last2_round_ids),
+            ).fetchall()
+
+            for rr in recent_rows:
+                pid = int(rr["player_id"])
+                cn = int(rr["court_number"])
+                played_recent.setdefault(pid, set()).add(cn)
+
+        # Recent per-team-composition history (signature -> set(courts))
+        team_sig_courts_recent: dict[tuple[int, ...], set[int]] = {}
+        if last2_round_ids:
+            q = ",".join(["?"] * len(last2_round_ids))
+            team_courts_rows = self.conn.execute(
+                f"""
+                SELECT m.team1_id AS team_id, ca.court_number AS court_number
+                FROM matches m
+                JOIN rounds r ON r.id = m.round_id
+                JOIN court_assignments ca ON ca.match_id = m.id
+                WHERE r.id IN ({q})
+                  AND m.team2_id IS NOT NULL
+                  AND ca.court_number IS NOT NULL
+
+                UNION ALL
+
+                SELECT m.team2_id AS team_id, ca.court_number AS court_number
+                FROM matches m
+                JOIN rounds r ON r.id = m.round_id
+                JOIN court_assignments ca ON ca.match_id = m.id
+                WHERE r.id IN ({q})
+                  AND m.team2_id IS NOT NULL
+                  AND ca.court_number IS NOT NULL
+                """,
+                tuple(last2_round_ids) + tuple(last2_round_ids),
+            ).fetchall()
+
+            for tr in team_courts_rows:
+                tid = int(tr["team_id"])
+                cn = int(tr["court_number"])
+                sig = team_signature(tid)
+                if sig:
+                    team_sig_courts_recent.setdefault(sig, set()).add(cn)
 
         prio_courts = set(range(1, 13))
 
         def player_needs_prio(pid: int) -> bool:
-            return len(played.get(pid, set()).intersection(prio_courts)) == 0
-
-        import random
+            return len(played_all.get(pid, set()).intersection(prio_courts)) == 0
 
         courts_all = list(range(1, num_courts + 1))
         match_list = [dict(m) for m in matches]
@@ -274,15 +370,34 @@ class RoundRepo:
             candidates = available[:]
             random.shuffle(candidates)
 
+            sig1 = team_signature(t1)
+            sig2 = team_signature(t2)
+
             for c in candidates:
                 cost = 0
+
+                # Strong avoid: player already on that court in last 2 validated rounds
                 for pid in pids:
-                    if c in played.get(pid, set()):
+                    if c in played_recent.get(pid, set()):
+                        cost += 5000
+
+                # Avoid: player already on that court in any validated history
+                for pid in pids:
+                    if c in played_all.get(pid, set()):
                         cost += 1000
+
+                # Strong avoid: same team composition already on that court in last 2 validated rounds
+                if sig1 and c in team_sig_courts_recent.get(sig1, set()):
+                    cost += 8000
+                if sig2 and c in team_sig_courts_recent.get(sig2, set()):
+                    cost += 8000
+
+                # Encourage prio courts for players who never had a prio court yet
                 if c in prio_courts:
                     for pid in pids:
                         if player_needs_prio(pid):
                             cost -= 50
+
                 if best_cost is None or cost < best_cost:
                     best_cost = cost
                     best_court = c

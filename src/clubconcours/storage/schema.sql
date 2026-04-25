@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS players (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'MIXTE'  -- TIREUR | PLACEUR | MIXTE
+  role TEXT NOT NULL DEFAULT 'MIXTE',  -- TIREUR | PLACEUR | MIXTE
+  active INTEGER NOT NULL DEFAULT 1    -- 1 = actif, 0 = inactif (abandon/blessure)
 );
 
 CREATE TABLE IF NOT EXISTS rounds (
@@ -65,4 +66,5 @@ CREATE TABLE IF NOT EXISTS court_assignments (
 CREATE INDEX IF NOT EXISTS idx_matches_round_id ON matches(round_id);
 CREATE INDEX IF NOT EXISTS idx_round_teams_round_id ON round_teams(round_id);
 CREATE INDEX IF NOT EXISTS idx_players_role ON players(role);
+CREATE INDEX IF NOT EXISTS idx_players_active ON players(active);
 CREATE INDEX IF NOT EXISTS idx_rounds_swiss_style ON rounds(swiss_style);

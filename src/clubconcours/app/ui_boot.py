@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QFormLayout,
     QDateEdit,
+    QHeaderView,
 )
 
 from clubconcours.storage import db
@@ -112,6 +113,9 @@ class BootDialog(QDialog):
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Partie", "Format", "Mode tirage"])
         self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(False)
+        self.table.verticalHeader().setDefaultSectionSize(34)
+        self.table.verticalHeader().setVisible(False)
         layout.addWidget(self.table)
 
         # Help under table
@@ -130,11 +134,35 @@ class BootDialog(QDialog):
         self._resize_plan_table()
         self._update_mode_help()
 
+    def _setup_table_columns(self) -> None:
+        """
+        Prevent truncated text: keep col 0 fixed and let col 1/2 stretch.
+        Avoid resizeColumnsToContents() because embedded comboboxes + QSS make it jitter.
+        """
+        h = self.table.horizontalHeader()
+
+        self.table.setColumnWidth(0, 70)
+        h.setSectionResizeMode(0, QHeaderView.Fixed)
+
+        self.table.setColumnWidth(1, 170)
+        self.table.setColumnWidth(2, 260)
+        h.setSectionResizeMode(1, QHeaderView.Stretch)
+        h.setSectionResizeMode(2, QHeaderView.Stretch)
+
+        h.setStretchLastSection(True)
+
     def _populate_mode_combo(self, combo: QComboBox) -> None:
         combo.clear()
         for code in MODES:
             combo.addItem(DRAW_MODE_LABELS.get(code, code), code)
             combo.setItemData(combo.count() - 1, DRAW_MODE_HELP.get(code, ""), role=Qt.ToolTipRole)
+
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(18)
+
+    def _setup_format_combo(self, combo: QComboBox) -> None:
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(12)
 
     def _mode_code_from_combo(self, combo: QComboBox) -> str:
         code = combo.currentData()
@@ -174,6 +202,7 @@ class BootDialog(QDialog):
                 cb_fmt = QComboBox()
                 cb_fmt.addItems(FORMATS)
                 cb_fmt.setCurrentText("DOUBLETTE")
+                self._setup_format_combo(cb_fmt)
                 self.table.setCellWidget(i, 1, cb_fmt)
 
             cb_mode = self.table.cellWidget(i, 2)
@@ -185,7 +214,7 @@ class BootDialog(QDialog):
                 self.table.setCellWidget(i, 2, cb_mode)
 
         self.table.currentCellChanged.connect(lambda *_: self._update_mode_help())
-        self.table.resizeColumnsToContents()
+        self._setup_table_columns()
         self._update_mode_help()
 
     def _build_plan(self) -> list[dict]:

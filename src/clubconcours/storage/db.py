@@ -39,10 +39,16 @@ def init_db(conn: sqlite3.Connection) -> None:
     )
     _ensure_column(
         conn,
+        "players",
+        "active",
+        "ALTER TABLE players ADD COLUMN active INTEGER NOT NULL DEFAULT 1;",
+    )
+    _ensure_column(
+        conn,
         "rounds",
         "swiss_style",
         "ALTER TABLE rounds ADD COLUMN swiss_style TEXT NOT NULL DEFAULT 'STRONG';",
     )
 
-    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '3');")
+    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', '4');")
     conn.commit()

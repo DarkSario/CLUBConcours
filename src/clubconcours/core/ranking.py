@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
+
 @dataclass
 class PlayerStats:
     player_id: int
@@ -15,6 +16,7 @@ class PlayerStats:
     def ga(self) -> int:
         return self.plus - self.minus
 
+
 def compute_player_ranking(conn: sqlite3.Connection) -> list[PlayerStats]:
     # Load players
     players = conn.execute("SELECT id, name FROM players").fetchall()
@@ -26,7 +28,7 @@ def compute_player_ranking(conn: sqlite3.Connection) -> list[PlayerStats]:
     for r in rows:
         team_to_players.setdefault(int(r["round_team_id"]), []).append(int(r["player_id"]))
 
-    # Matches: count ONLY validated matches (cohérent avec ton choix classement B)
+    # Matches: count ONLY validated matches
     matches = conn.execute(
         "SELECT team1_id, team2_id, score1, score2 FROM matches WHERE validated=1"
     ).fetchall()
@@ -39,24 +41,32 @@ def compute_player_ranking(conn: sqlite3.Connection) -> list[PlayerStats]:
         if s1 is None or s2 is None:
             continue
 
+        s1i = int(s1)
+        s2i = int(s2)
+
         p1 = team_to_players.get(t1, [])
         p2 = team_to_players.get(int(t2), []) if t2 is not None else []
 
-        # points
+        # points (EXEMPT: p2 is empty, that's ok)
         for pid in p1:
-            stats[pid].plus += int(s1)
-            stats[pid].minus += int(s2)
+            stats[pid].plus += s1i
+            stats[pid].minus += s2i
         for pid in p2:
-            stats[pid].plus += int(s2)
-            stats[pid].minus += int(s1)
+            stats[pid].plus += s2i
+            stats[pid].minus += s1i
 
         # wins
-        if int(s1) > int(s2):
+        if t2 is None:
+            # EXEMPT counts as a win for team1 (if validated with scores)
             for pid in p1:
                 stats[pid].wins += 1
-        elif int(s2) > int(s1):
-            for pid in p2:
-                stats[pid].wins += 1
+        else:
+            if s1i > s2i:
+                for pid in p1:
+                    stats[pid].wins += 1
+            elif s2i > s1i:
+                for pid in p2:
+                    stats[pid].wins += 1
 
     # Sort (wins desc, plus desc, ga desc, name)
     result = list(stats.values())

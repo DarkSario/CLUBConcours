@@ -1,0 +1,2 @@
+[console_scripts]
+clubconcours = clubconcours.app.main:main

@@ -22,8 +22,12 @@ from PySide6.QtWidgets import (
     QFrame,
     QProgressBar,
     QMenu,
+    QDialog,
+    QDialogButtonBox,
+    QComboBox,
 )
 
+from clubconcours.core.draw import RoundConfig, draw_round
 from clubconcours.storage.repositories import RoundRepo
 
 
@@ -114,7 +118,6 @@ class ScoresPasteTableWidget(QTableWidget):
         self._round_tab = parent
 
     def keyPressEvent(self, event) -> None:  # type: ignore[override]
-        # Fallback (works when table has focus, not always when editor has focus)
         if (
             event.matches(QKeySequence.Paste)
             or (event.key() == Qt.Key_V and (event.modifiers() & Qt.ControlModifier))
@@ -132,6 +135,146 @@ class ScoresPasteTableWidget(QTableWidget):
 class PlayerStats:
     wins: int
     ga: int  # goal average = plus - minus
+
+
+class SwapPlayersDialog(QDialog):
+    """
+    Simple dialog to swap 2 players across any 2 teams of the round.
+    Writes changes immediately when user clicks Apply.
+    """
+
+    def __init__(self, parent: QWidget, conn: sqlite3.Connection, round_id: int) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Modifier tirage — Échanger des joueurs")
+        self.conn = conn
+        self.round_id = round_id
+
+        layout = QVBoxLayout(self)
+
+        # Load team -> players
+        self._teams = self._load_teams()
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Joueur A:"))
+        self.cb_a = QComboBox()
+        row1.addWidget(self.cb_a, 1)
+        layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Joueur B:"))
+        self.cb_b = QComboBox()
+        row2.addWidget(self.cb_b, 1)
+        layout.addLayout(row2)
+
+        self._populate()
+
+        btns = QDialogButtonBox(QDialogButtonBox.Apply | QDialogButtonBox.Close)
+        btns.button(QDialogButtonBox.Apply).setText("Échanger et enregistrer")
+        btns.rejected.connect(self.reject)
+        btns.button(QDialogButtonBox.Apply).clicked.connect(self._apply_swap)
+        layout.addWidget(btns)
+
+        self.setMinimumWidth(560)
+
+    def _load_teams(self) -> list[tuple[int, int, list[tuple[int, str]]]]:
+        """
+        Returns [(team_id, team_index, [(player_id, name), ...]), ...]
+        """
+        teams = self.conn.execute(
+            """
+            SELECT id, team_index
+            FROM round_teams
+            WHERE round_id=?
+            ORDER BY team_index
+            """,
+            (self.round_id,),
+        ).fetchall()
+
+        out: list[tuple[int, int, list[tuple[int, str]]]] = []
+        for t in teams:
+            tid = int(t["id"])
+            idx = int(t["team_index"])
+            players = self.conn.execute(
+                """
+                SELECT p.id AS pid, p.name AS name
+                FROM round_team_players rtp
+                JOIN players p ON p.id = rtp.player_id
+                WHERE rtp.round_team_id=?
+                ORDER BY p.name COLLATE NOCASE
+                """,
+                (tid,),
+            ).fetchall()
+            out.append((tid, idx, [(int(p["pid"]), str(p["name"])) for p in players]))
+        return out
+
+    def _populate(self) -> None:
+        self.cb_a.clear()
+        self.cb_b.clear()
+
+        # Store data as (team_id, player_id)
+        for tid, idx, players in self._teams:
+            for pid, name in players:
+                label = f"Équipe {idx}: {name}"
+                self.cb_a.addItem(label, (tid, pid))
+                self.cb_b.addItem(label, (tid, pid))
+
+    def _apply_swap(self) -> None:
+        a = self.cb_a.currentData()
+        b = self.cb_b.currentData()
+        if not a or not b:
+            return
+
+        team_a, pid_a = a
+        team_b, pid_b = b
+
+        if int(pid_a) == int(pid_b):
+            QMessageBox.information(self, "Échange", "Choisis deux joueurs différents.")
+            return
+
+        # swapping within same team is allowed but pointless; block it
+        if int(team_a) == int(team_b):
+            QMessageBox.information(self, "Échange", "Les deux joueurs sont dans la même équipe.")
+            return
+
+        try:
+            # Ensure both rows exist
+            ra = self.conn.execute(
+                "SELECT 1 FROM round_team_players WHERE round_team_id=? AND player_id=?",
+                (int(team_a), int(pid_a)),
+            ).fetchone()
+            rb = self.conn.execute(
+                "SELECT 1 FROM round_team_players WHERE round_team_id=? AND player_id=?",
+                (int(team_b), int(pid_b)),
+            ).fetchone()
+
+            if ra is None or rb is None:
+                QMessageBox.warning(self, "Échange", "Impossible : joueur(s) introuvable(s) dans l'équipe.")
+                return
+
+            # Swap by updating team_id for each player (must do carefully to avoid UNIQUE constraints if any)
+            # Use a temporary invalid team id marker via transaction-style swap:
+            # 1) move A to B
+            # 2) move B to A, matching by original team+player
+            self.conn.execute(
+                "UPDATE round_team_players SET round_team_id=? WHERE round_team_id=? AND player_id=?",
+                (int(team_b), int(team_a), int(pid_a)),
+            )
+            self.conn.execute(
+                "UPDATE round_team_players SET round_team_id=? WHERE round_team_id=? AND player_id=?",
+                (int(team_a), int(team_b), int(pid_b)),
+            )
+
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            QMessageBox.critical(self, "Échange", str(e))
+            return
+
+        # Reload teams list so next swaps use fresh state
+        self._teams = self._load_teams()
+        self._populate()
+
+        QMessageBox.information(self, "Échange", "Échange enregistré.")
 
 
 class RoundTab(QWidget):
@@ -185,6 +328,19 @@ class RoundTab(QWidget):
         self.btn_assign.setToolTip("Assigner automatiquement les terrains")
         self.btn_assign.clicked.connect(self.assign_courts)
         header.addWidget(self.btn_assign)
+
+        # NEW: modify draw (swap players)
+        self.btn_modify_draw = QPushButton("Modifier tirage")
+        self.btn_modify_draw.setToolTip("Échanger des joueurs entre équipes (enregistre en DB)")
+        self.btn_modify_draw.clicked.connect(self.open_modify_draw)
+        header.addWidget(self.btn_modify_draw)
+
+        # NEW: redraw round (only if no score entered)
+        self.btn_redraw = QPushButton("Refaire tirage")
+        self.btn_redraw.setProperty("danger", True)
+        self.btn_redraw.setToolTip("Refaire le tirage (possible uniquement si aucun score n'est saisi)")
+        self.btn_redraw.clicked.connect(self.redraw_round)
+        header.addWidget(self.btn_redraw)
 
         self.btn_save = QPushButton("Enregistrer scores")
         self.btn_save.setProperty("primary", True)
@@ -297,6 +453,147 @@ class RoundTab(QWidget):
             return False
         return int(r["scores_locked"]) == 1 or int(r["validated"]) == 1
 
+    def _has_any_score_entered(self) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM matches
+            WHERE round_id=?
+              AND team2_id IS NOT NULL
+              AND (score1 IS NOT NULL OR score2 IS NOT NULL)
+            """,
+            (self.round_id,),
+        ).fetchone()
+        return row is not None and int(row["c"] or 0) > 0
+
+    # ---------------- modify draw ----------------
+
+    def open_modify_draw(self) -> None:
+        if self._is_locked():
+            QMessageBox.information(self, "Modifier tirage", "Partie verrouillée. Déverrouille d'abord.")
+            return
+
+        dlg = SwapPlayersDialog(self, self.conn, self.round_id)
+        dlg.exec()
+
+        # Refresh UI after potential swaps
+        self.refresh()
+        self.data_changed.emit()
+
+    def redraw_round(self) -> None:
+        if self._is_locked():
+            QMessageBox.information(self, "Refaire tirage", "Partie verrouillée. Déverrouille d'abord.")
+            return
+
+        if self._has_any_score_entered():
+            QMessageBox.information(self, "Refaire tirage", "Impossible : des scores sont déjà saisis.")
+            return
+
+        ok = QMessageBox.question(
+            self,
+            "Refaire tirage",
+            "Refaire complètement le tirage de cette partie ?\n\n"
+            "- Les équipes et matchs seront supprimés\n"
+            "- Les terrains seront réassignés\n"
+            "- Aucun score ne doit être saisi\n\n"
+            "Confirmer ?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if ok != QMessageBox.Yes:
+            return
+
+        try:
+            # Load current round config
+            r = self.conn.execute(
+                """
+                SELECT number, format, draw_mode, exempt_mode, exempt_score_for, exempt_score_against, swiss_style
+                FROM rounds
+                WHERE id=?
+                """,
+                (self.round_id,),
+            ).fetchone()
+            if r is None:
+                QMessageBox.warning(self, "Refaire tirage", "Partie introuvable.")
+                return
+
+            round_number = int(r["number"])
+            fmt = str(r["format"])
+            draw_mode = str(r["draw_mode"])
+            swiss_style = str(r["swiss_style"] or "STRONG")
+            exempt_mode = str(r["exempt_mode"] or "win_fixed_score")
+            exempt_for = int(r["exempt_score_for"] or 13)
+            exempt_against = int(r["exempt_score_against"] or 7)
+
+            # Active players list (same as draw tab)
+            players = self.conn.execute("SELECT id FROM players WHERE active=1").fetchall()
+            player_ids = [int(p["id"]) for p in players]
+            if len(player_ids) < 2:
+                QMessageBox.warning(self, "Refaire tirage", "Il faut au moins 2 joueurs actifs.")
+                return
+
+            # Delete existing round data
+            self.conn.execute(
+                "DELETE FROM court_assignments WHERE match_id IN (SELECT id FROM matches WHERE round_id=?)",
+                (self.round_id,),
+            )
+            self.conn.execute("DELETE FROM matches WHERE round_id=?", (self.round_id,))
+            self.conn.execute(
+                "DELETE FROM round_team_players WHERE round_team_id IN (SELECT id FROM round_teams WHERE round_id=?)",
+                (self.round_id,),
+            )
+            self.conn.execute("DELETE FROM round_teams WHERE round_id=?", (self.round_id,))
+
+            # Also reset round flags before re-draw
+            self.conn.execute("UPDATE rounds SET drawn=0, scores_locked=0, validated=0 WHERE id=?", (self.round_id,))
+            self.conn.commit()
+
+            # Recreate using draw_round in a NEW round id, but we want to reuse the same round record.
+            # Easiest: create a new round, then delete old record, then update UI to new id.
+            #
+            # However RoundTab is bound to self.round_id, so we instead:
+            # - create a new round via draw_round
+            # - then warn user to switch tab? (not great)
+            #
+            # Better approach: call draw_round-like logic but persisting into current round_id.
+            # Since draw_round always creates a round row, we do a small workaround:
+            # - temporarily delete the current round row
+            # - draw_round will create a new one (same number)
+            # - then we switch self.round_id to the new id.
+            #
+            # This keeps DB consistent and avoids duplicating draw logic.
+
+            self.conn.execute("DELETE FROM rounds WHERE id=?", (self.round_id,))
+            self.conn.commit()
+
+            new_round_id = draw_round(
+                self.conn,
+                round_number=round_number,
+                cfg=RoundConfig(
+                    format=fmt,
+                    draw_mode=draw_mode,
+                    swiss_style=swiss_style,
+                    exempt_mode=exempt_mode,
+                    exempt_score_for=exempt_for,
+                    exempt_score_against=exempt_against,
+                ),
+                player_ids=player_ids,
+            )
+
+            self.round_id = int(new_round_id)
+            self.rr = RoundRepo(self.conn)
+
+        except Exception as e:
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            QMessageBox.critical(self, "Refaire tirage", str(e))
+            return
+
+        QMessageBox.information(self, "Refaire tirage", "Tirage refait.")
+        self.refresh()
+        self.data_changed.emit()
+
     # ---------------- roles helpers (for display) ----------------
 
     def _player_roles_by_id(self) -> dict[int, str]:
@@ -391,7 +688,6 @@ class RoundTab(QWidget):
             w = int(stats_by_name.get(name, PlayerStats(0, 0)).wins)
             c = wins_to_color(w).name()
             rs = role_short(role_by_id.get(pid, "MIXTE"))
-            # Example: Alice <small>(T)</small>
             parts.append(
                 f'<span style="color:{c}; font-weight:700;">{html.escape(name)}</span>'
                 f'<span style="color:#9CA3AF;">({rs})</span>'
@@ -612,6 +908,10 @@ class RoundTab(QWidget):
         self.btn_assign.setEnabled(not locked)
         self.btn_unlock.setEnabled(locked)
 
+        # Enable/disable draw-modifying actions
+        self.btn_modify_draw.setEnabled(not locked)
+        self.btn_redraw.setEnabled((not locked) and (not self._has_any_score_entered()))
+
     # ---------------- quick input behavior ----------------
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
@@ -655,7 +955,6 @@ class RoundTab(QWidget):
 
         menu = QMenu(self)
 
-        # Paste action always visible (only enabled when not locked)
         act_paste = menu.addAction("Coller (Excel) dans scores")
         act_paste.setEnabled(not locked)
 
@@ -789,7 +1088,6 @@ class RoundTab(QWidget):
             QMessageBox.information(self, "Coller scores", "Partie verrouillée.")
             return
 
-        # Ensure we are not stuck in an editor widget (important on Windows)
         try:
             self.table.clearFocus()
             self.table.setFocus(Qt.OtherFocusReason)

@@ -19,6 +19,9 @@ SWISS_STYLES = {"STRONG", "BALANCED"}
 
 PLAYER_ROLES = {"TIREUR", "PLACEUR", "MIXTE"}
 
+# Keep this (secondary objective only)
+SWISS_AVOID_REPEAT_TEAMMATES = True
+
 
 @dataclass(frozen=True)
 class RoundConfig:
@@ -67,38 +70,47 @@ def _load_roles(conn: sqlite3.Connection, player_ids: list[int]) -> dict[int, st
 def _role_score(team: list[int], role_by_player: dict[int, str], team_size: int) -> int:
     """
     Lower is better.
-    For DOUBLETTE:
+
+    DOUBLETTE:
       0 = T+P
       5 = (T+M) or (P+M)
       10 = M+M
       50 = T+T or P+P
-    For TRIPLETTE:
-      0 = has T and P
-      10 = has T xor P (but not both)
-      30 = only M
+
+    TRIPLETTE preferences:
+      0  = 1T + >=1P                 [T+P+{P|M}]
+      5  = 1P + 2M                   [P+M+M]
+      15 = has T and P but not ideal [T+T+P]
+      30 = has T xor has P
+      60 = only M
     """
     if team_size <= 1:
         return 0
 
     roles = [role_by_player.get(pid, "MIXTE") for pid in team]
-    has_t = any(r == "TIREUR" for r in roles)
-    has_p = any(r == "PLACEUR" for r in roles)
+    n_t = sum(1 for r in roles if r == "TIREUR")
+    n_p = sum(1 for r in roles if r == "PLACEUR")
     n_m = sum(1 for r in roles if r == "MIXTE")
 
     if team_size == 2:
-        if has_t and has_p:
+        if n_t == 1 and n_p == 1:
             return 0
-        if (has_t or has_p) and n_m == 1:
+        if (n_t == 1 and n_m == 1) or (n_p == 1 and n_m == 1):
             return 5
         if n_m == 2:
             return 10
         return 50
 
-    if has_t and has_p:
+    # TRIPLETTE
+    if n_t == 1 and n_p >= 1:
         return 0
-    if has_t or has_p:
-        return 10
-    return 30
+    if n_t == 0 and n_p == 1 and n_m == 2:
+        return 5
+    if n_t >= 1 and n_p >= 1:
+        return 15
+    if (n_t >= 1) ^ (n_p >= 1):
+        return 30
+    return 60
 
 
 def _debug_role_stats(
@@ -107,9 +119,6 @@ def _debug_role_stats(
     role_by_player: dict[int, str],
     prefix: str,
 ) -> None:
-    """
-    Prints role distribution for debugging.
-    """
     if not teams:
         print(f"[draw] {prefix}: no teams")
         return
@@ -134,29 +143,28 @@ def _debug_role_stats(
                 tt += 1
             elif s == {"PLACEUR"}:
                 pp += 1
-
         print(f"[draw] {prefix} roles (doublette): TP={tp} TM={tm} PM={pm} MM={mm} TT={tt} PP={pp}")
 
     elif team_size == 3:
-        has_tp = t_only = p_only = all_m = 0
+        ideal = pmm = has_tp = other = 0
         for t in teams:
             if len(t) != 3:
                 continue
             roles = [role_by_player.get(pid, "MIXTE") for pid in t]
-            has_t = any(r == "TIREUR" for r in roles)
-            has_p = any(r == "PLACEUR" for r in roles)
-            if has_t and has_p:
-                has_tp += 1
-            elif has_t and not has_p:
-                t_only += 1
-            elif has_p and not has_t:
-                p_only += 1
-            else:
-                all_m += 1
+            n_t = sum(1 for r in roles if r == "TIREUR")
+            n_p = sum(1 for r in roles if r == "PLACEUR")
+            n_m = sum(1 for r in roles if r == "MIXTE")
 
-        print(
-            f"[draw] {prefix} roles (triplette): has(T&P)={has_tp} T_only={t_only} P_only={p_only} all_M={all_m}"
-        )
+            if n_t == 1 and n_p >= 1:
+                ideal += 1
+            elif n_t == 0 and n_p == 1 and n_m == 2:
+                pmm += 1
+            elif n_t >= 1 and n_p >= 1:
+                has_tp += 1
+            else:
+                other += 1
+
+        print(f"[draw] {prefix} roles (triplette): ideal(T+P+X)={ideal} PMM={pmm} hasTP={has_tp} other={other}")
     else:
         print(f"[draw] {prefix}: team_size={team_size} (no role stats)")
 
@@ -211,22 +219,25 @@ def _build_triplettes_role_first(
 
     teams: list[list[int]] = []
 
-    while t and p and (m or t or p):
+    # Prefer: T + P + (P or M)  -> take second P first
+    while t and p and (p or m):
         a = t.pop()
         b = p.pop()
-        if m:
-            c = m.pop()
-        elif t:
-            c = t.pop()
-        else:
+        if p:
             c = p.pop()
+        else:
+            c = m.pop()
         teams.append([a, b, c])
 
-    while t and len(m) >= 2:
-        teams.append([t.pop(), m.pop(), m.pop()])
+    # Then: P + M + M
     while p and len(m) >= 2:
         teams.append([p.pop(), m.pop(), m.pop()])
 
+    # Then: T + M + M (fallback)
+    while t and len(m) >= 2:
+        teams.append([t.pop(), m.pop(), m.pop()])
+
+    # Then: M + M + M
     while len(m) >= 3:
         teams.append([m.pop(), m.pop(), m.pop()])
 
@@ -255,72 +266,117 @@ def _build_teams_non_swiss(
     raise ValueError(f"Unsupported team size: {team_size}")
 
 
-def _build_teams_role_aware_from_order(
-    ordered: list[int],
+def _role_first_from_pool(pool: list[int], team_size: int, role_by_player: dict[int, str]) -> list[list[int]]:
+    if team_size == 1:
+        return [[pid] for pid in pool]
+    if team_size == 2:
+        teams, _ = _build_doublettes_role_first(pool, role_by_player)
+        return [t for t in teams if len(t) == 2]
+    teams, _ = _build_triplettes_role_first(pool, role_by_player)
+    return [t for t in teams if len(t) == 3]
+
+
+def _group_players_by_wins(
+    player_ids: list[int],
+    wins_by_player: dict[int, int],
+    plus_by_player: dict[int, int],
+) -> list[tuple[int, list[int]]]:
+    groups: dict[int, list[int]] = {}
+    for pid in player_ids:
+        w = int(wins_by_player.get(pid, 0))
+        groups.setdefault(w, []).append(pid)
+
+    out: list[tuple[int, list[int]]] = []
+    for w, pids in groups.items():
+        pids.sort(key=lambda pid: plus_by_player.get(pid, 0), reverse=True)
+        out.append((w, pids))
+
+    out.sort(key=lambda x: x[0], reverse=True)
+    return out
+
+
+def _build_teams_swiss_strict_by_wins(
+    player_ids: list[int],
     team_size: int,
     role_by_player: dict[int, str],
+    wins_by_player: dict[int, int],
+    plus_by_player: dict[int, int],
     swiss_style: str,
 ) -> tuple[list[list[int]], Optional[list[int]]]:
+    """
+    STRICT COLORS:
+      1) Build all full teams inside each wins group (NO mixing).
+      2) Only if a wins group has leftovers, complete by taking EXACTLY what is needed from (wins-1).
+      3) Remaining leftovers -> exempt team.
+    """
     if team_size == 1:
+        ordered = player_ids[:]
+        ordered.sort(key=lambda pid: (wins_by_player.get(pid, 0), plus_by_player.get(pid, 0)), reverse=True)
         return [[pid] for pid in ordered], None
 
-    pool = ordered[:]
+    groups = _group_players_by_wins(player_ids, wins_by_player, plus_by_player)
+
     teams: list[list[int]] = []
+    remainder: dict[int, list[int]] = {}
 
-    if swiss_style == "BALANCED":
-        while len(pool) >= team_size:
-            if team_size == 2:
-                teams.append([pool.pop(0), pool.pop(-1)])
-            else:
-                a = pool.pop(0)
-                b = pool.pop(-1)
-                c = pool.pop(-1) if pool else None
-                if c is None:
-                    break
-                teams.append([a, b, c])
-    else:
-        i = 0
-        while i + team_size <= len(pool):
-            teams.append(pool[i : i + team_size])
-            i += team_size
-        pool = pool[i:]
+    # Step 1: teams inside each win group
+    for w, grp in groups:
+        grp2 = grp[:]
 
-    exempt_team = pool[:] if pool else None
+        # Optional BALANCED ordering inside same win group
+        if swiss_style == "BALANCED" and len(grp2) >= team_size:
+            alt: list[int] = []
+            lo = 0
+            hi = len(grp2) - 1
+            while lo <= hi:
+                alt.append(grp2[lo])
+                lo += 1
+                if lo <= hi:
+                    alt.append(grp2[hi])
+                    hi -= 1
+            grp2 = alt
 
-    if team_size in (2, 3) and len(teams) >= 2:
-        for _ in range(200):
-            improved = False
-            for i in range(len(teams) - 1):
-                t1 = teams[i]
-                t2 = teams[i + 1]
-                base = _role_score(t1, role_by_player, team_size) + _role_score(t2, role_by_player, team_size)
+        cut = (len(grp2) // team_size) * team_size
+        main = grp2[:cut]
+        rest = grp2[cut:]
 
-                best = base
-                best_swap = None
+        if main:
+            teams.extend(_role_first_from_pool(main, team_size, role_by_player))
+        if rest:
+            remainder[w] = rest
 
-                for a in range(team_size):
-                    for b in range(team_size):
-                        cand1 = t1[:]
-                        cand2 = t2[:]
-                        cand1[a], cand2[b] = cand2[b], cand1[a]
-                        score = _role_score(cand1, role_by_player, team_size) + _role_score(
-                            cand2, role_by_player, team_size
-                        )
-                        if score < best:
-                            best = score
-                            best_swap = (a, b)
-                            if best == 0:
-                                break
-                    if best == 0:
-                        break
+    # Step 2: minimal adjacent mixing only to complete teams
+    for w in sorted(list(remainder.keys()), reverse=True):
+        rest_w = remainder.get(w, [])
+        if not rest_w:
+            continue
 
-                if best_swap is not None:
-                    a, b = best_swap
-                    t1[a], t2[b] = t2[b], t1[a]
-                    improved = True
-            if not improved:
-                break
+        need = (-len(rest_w)) % team_size
+        if need == 0:
+            continue
 
+        w2 = w - 1
+        rest_w2 = remainder.get(w2, [])
+        if not rest_w2 or len(rest_w2) < need:
+            continue
+
+        take = rest_w2[:need]
+        remainder[w2] = rest_w2[need:]
+
+        merged = rest_w + take
+        cut = (len(merged) // team_size) * team_size
+        main = merged[:cut]
+        rest = merged[cut:]
+
+        if main:
+            teams.extend(_role_first_from_pool(main, team_size, role_by_player))
+        remainder[w] = rest
+
+    leftovers: list[int] = []
+    for w in sorted(remainder.keys(), reverse=True):
+        leftovers.extend(remainder[w])
+
+    exempt_team = leftovers if leftovers else None
     return teams, exempt_team
 
 
@@ -438,13 +494,27 @@ def draw_round(
 
     # --- build teams ---
     if cfg.draw_mode == "SWISS_BY_WINS":
-        pool = player_ids[:]
-        pool.sort(
-            key=lambda pid: (wins_by_player.get(pid, 0), plus_by_player.get(pid, 0)),
-            reverse=True,
+        teams, exempt_team = _build_teams_swiss_strict_by_wins(
+            player_ids=player_ids,
+            team_size=team_size,
+            role_by_player=role_by_player,
+            wins_by_player=wins_by_player,
+            plus_by_player=plus_by_player,
+            swiss_style=swiss_style,
         )
-        teams, exempt_team = _build_teams_role_aware_from_order(pool, team_size, role_by_player, swiss_style)
         _debug_role_stats(teams, team_size, role_by_player, prefix=f"{cfg.draw_mode}/{swiss_style} BEFORE")
+
+        if SWISS_AVOID_REPEAT_TEAMMATES and team_size > 1:
+            teams = _improve_teams_avoid_duplicates(
+                teams=teams,
+                team_size=team_size,
+                role_by_player=role_by_player,
+                teammate_counts=teammate_counts,
+                iterations=1200 if team_size == 2 else 1800,
+            )
+
+        _debug_role_stats(teams, team_size, role_by_player, prefix=f"{cfg.draw_mode}/{swiss_style} AFTER")
+
     else:
         teams, exempt_team = _build_teams_non_swiss(player_ids, team_size, role_by_player)
         _debug_role_stats(teams, team_size, role_by_player, prefix=f"{cfg.draw_mode} BEFORE")
